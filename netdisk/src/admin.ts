@@ -2,7 +2,7 @@ import type { Env } from "./types";
 import { ensureSchema, randomId, getSchemaStatus, repairDatabase } from "./db";
 import { generateCodes, makeBatchId, formatCodeStatus, findCodeByString } from "./codes";
 import { getSettings, updateSettings } from "./settings";
-import { checkAdminKey, createSession, verifySession, clientIp, rateLimitLogin, requireAdminIp } from "./auth";
+import { checkAdminKey, checkAdminUser, createSession, verifySession, clientIp, rateLimitLogin, requireAdminIp } from "./auth";
 import { pickLang } from "./i18n";
 import { hashPassword } from "./public";
 import { parseUA } from "./ua";
@@ -116,10 +116,12 @@ export async function handleAdminApi(
     }
     if (!env.admin)
       return json({ error: msg(req, "未设置 admin 密钥，请先执行 npx wrangler secret put admin", "admin is not set. Run: npx wrangler secret put admin") }, 500);
-    const body = await readJson<{ key: string; code?: string }>(req);
-    if (!body.key || !checkAdminKey(env, body.key)) {
-      ctx.waitUntil(writeLoginLog(env, req, "login", "fail", "invalid_key"));
-      return json({ error: msg(req, "管理密钥错误", "Invalid admin key") }, 401);
+    const body = await readJson<{ key: string; code?: string; username?: string }>(req);
+    // 双字段校验：用户名（仅当配置了 admin_username）+ 密码，任一不符都拒绝。
+    // 提示语故意不区分"用户名错"还是"密码错"，避免泄露到底哪一半是对的。
+    if (!body.key || !checkAdminUser(env, body.username ?? "") || !checkAdminKey(env, body.key)) {
+      ctx.waitUntil(writeLoginLog(env, req, "login", "fail", "invalid_credentials"));
+      return json({ error: msg(req, "用户名或密码错误", "Invalid username or password") }, 401);
     }
 
     // 密码正确 —— 检查是否需要 2FA
