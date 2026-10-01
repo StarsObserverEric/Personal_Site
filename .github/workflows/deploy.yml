@@ -16,8 +16,37 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      # 为什么需要这一步：
+      # 在 GitHub 网页上粘贴 Secret 时很容易带进换行/空格，而 wrangler 会把凭证塞进 HTTP 头，
+      # 头值里只要有换行就会直接崩：
+      #   ✘ [ERROR] Headers.set: "..." is an invalid header value.
+      # 所以这里先剔除所有空白字符，再校验格式；格式不对就明确报出是哪个 Secret 脏了。
+      - name: Validate Cloudflare credentials
+        env:
+          RAW_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          RAW_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          TOKEN="$(printf '%s' "${RAW_TOKEN:-}" | tr -d '[:space:]')"
+          ACCOUNT="$(printf '%s' "${RAW_ACCOUNT:-}" | tr -d '[:space:]')"
+          echo "CF_API_TOKEN  : 原始 ${#RAW_TOKEN} 字符 -> 清理后 ${#TOKEN} 字符"
+          echo "CF_ACCOUNT_ID : 原始 ${#RAW_ACCOUNT} 字符 -> 清理后 ${#ACCOUNT} 字符"
+          if [ "${#TOKEN}" != "${#RAW_TOKEN}" ] || [ "${#ACCOUNT}" != "${#RAW_ACCOUNT}" ]; then
+            echo "::warning::Secret 值里含空白/换行字符，本次运行已自动剔除；建议删掉重建以免混淆"
+          fi
+          if ! printf '%s' "$ACCOUNT" | grep -Eq '^[0-9a-f]{32}$'; then
+            echo "::error::CF_ACCOUNT_ID 格式非法（清理后 ${#ACCOUNT} 字符，应为 32 位小写十六进制，例如 06d58159887a160484d5649c03322607）"
+            exit 1
+          fi
+          if ! printf '%s' "$TOKEN" | grep -Eq '^[A-Za-z0-9_-]{38,48}$'; then
+            echo "::error::CF_API_TOKEN 格式非法（清理后 ${#TOKEN} 字符，Cloudflare 令牌应是 40 字符左右的 A-Za-z0-9_- ）"
+            exit 1
+          fi
+          {
+            echo "CLOUDFLARE_API_TOKEN=$TOKEN"
+            echo "CLOUDFLARE_ACCOUNT_ID=$ACCOUNT"
+          } >> "$GITHUB_ENV"
+          echo "凭证格式校验通过"
+
       - name: Deploy to Cloudflare Pages
         run: npx --yes wrangler@latest pages deploy homepage --project-name starsobserveric --branch main --commit-dirty=true
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}

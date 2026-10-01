@@ -19,10 +19,34 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      # 同 deploy.yml：剔除 Secret 值里可能混入的换行/空格，否则 wrangler 会报
+      # Headers.set: "..." is an invalid header value.
+      - name: Verify Cloudflare credentials
+        env:
+          RAW_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          RAW_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          TOKEN="$(printf '%s' "${RAW_TOKEN:-}" | tr -d '[:space:]')"
+          ACCOUNT="$(printf '%s' "${RAW_ACCOUNT:-}" | tr -d '[:space:]')"
+          echo "CF_API_TOKEN  : 原始 ${#RAW_TOKEN} 字符 -> 清理后 ${#TOKEN} 字符"
+          echo "CF_ACCOUNT_ID : 原始 ${#RAW_ACCOUNT} 字符 -> 清理后 ${#ACCOUNT} 字符"
+          if ! printf '%s' "$ACCOUNT" | grep -Eq '^[0-9a-f]{32}$'; then
+            echo "::error::CF_ACCOUNT_ID 格式非法（清理后 ${#ACCOUNT} 字符，应为 32 位小写十六进制）"
+            exit 1
+          fi
+          if ! printf '%s' "$TOKEN" | grep -Eq '^[A-Za-z0-9_-]{38,48}$'; then
+            echo "::error::CF_API_TOKEN 格式非法（清理后 ${#TOKEN} 字符）"
+            exit 1
+          fi
+          {
+            echo "CLOUDFLARE_API_TOKEN=$TOKEN"
+            echo "CLOUDFLARE_ACCOUNT_ID=$ACCOUNT"
+          } >> "$GITHUB_ENV"
+          echo "凭证格式校验通过"
+
       - name: Install dependencies
         run: npm ci
+
       - name: Deploy Worker
         run: npx wrangler deploy
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
