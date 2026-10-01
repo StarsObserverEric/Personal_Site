@@ -1,6 +1,7 @@
 import adminHTML from "../public/admin.html";
 import shareHTML from "../public/share.html";
 import marketHTML from "../public/market.html";
+import loginHTML from "../public/login.html";
 import { pickLang, type L10n } from "./i18n";
 
 /**
@@ -51,6 +52,19 @@ export function serveAdminPage(): Response {
   const headers = new Headers({ "content-type": "text/html;charset=utf-8", "cache-control": "no-store" });
   addSecurityHeaders(headers);
   return new Response(adminHTML, { headers });
+}
+
+/**
+ * 未登录时**唯一**可以拿到的页面。
+ *
+ * 关键点：未登录时后台 HTML 一个字节都不发送。
+ * "未登录连界面都进不去"必须在服务端成立 —— 如果只是前端把按钮藏起来，
+ * 整个后台的 DOM 和接口路径依然会随 HTML 一起泄露出去。
+ */
+export function serveLoginPage(): Response {
+  const headers = new Headers({ "content-type": "text/html;charset=utf-8", "cache-control": "no-store" });
+  addSecurityHeaders(headers);
+  return new Response(loginHTML, { headers });
 }
 
 /**
