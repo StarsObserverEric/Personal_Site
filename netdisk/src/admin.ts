@@ -59,6 +59,58 @@ function sanitizeName(name: string): string {
   return cleaned || "unnamed";
 }
 
+/**
+ * 解析上传时前端探测出的媒体元数据（`X-File-Meta` 头，值为 base64(JSON)）。
+ *
+ * 为什么用 base64 而不是直接塞 JSON：HTTP 头只保证 ASCII 安全，而 base64 一劳永逸。
+ * 所有字段都做**白名单 + 数值范围**校验 —— 这些值来自客户端，最终会进 SQL 与界面，
+ * 任何一项不合法就整体丢弃（返回全 null）。宁可不显示元数据，也不写脏数据。
+ */
+function parseMediaMeta(raw: string | null): {
+  mtime: number | null;
+  width: number | null;
+  height: number | null;
+  duration_ms: number | null;
+  fps: number | null;
+  v_bitrate: number | null;
+  a_bitrate: number | null;
+} {
+  const empty = {
+    mtime: null, width: null, height: null, duration_ms: null,
+    fps: null, v_bitrate: null, a_bitrate: null,
+  };
+  if (!raw) return empty;
+  let obj: Record<string, unknown>;
+  try {
+    const bin = atob(raw);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    obj = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
+  } catch {
+    return empty;
+  }
+  /** 正整数校验：非数字 / 非有限 / ≤0 / 超上限 一律当作"没有" */
+  const num = (v: unknown, max: number): number | null => {
+    const n = typeof v === "number" ? v : Number(v);
+    if (!Number.isFinite(n) || n <= 0 || n > max) return null;
+    return Math.round(n);
+  };
+  const fpsRaw = typeof obj.fps === "number" ? obj.fps : Number(obj.fps);
+  const fps =
+    Number.isFinite(fpsRaw) && fpsRaw > 0 && fpsRaw <= 1000
+      ? Math.round(fpsRaw * 1000) / 1000
+      : null;
+  return {
+    mtime: num(obj.mtime, 4102444800000), // 上限 2100 年，防止乱填把界面撑坏
+    width: num(obj.width, 100000),
+    height: num(obj.height, 100000),
+    duration_ms: num(obj.duration_ms, 30 * 24 * 3600 * 1000),
+    fps,
+    v_bitrate: num(obj.v_bitrate, 1e11),
+    a_bitrate: num(obj.a_bitrate, 1e11),
+  };
+}
+
 /** 生成带文件名后缀的直链 URL：/d/{token}/{filename}，文件名做 URL 编码 */
 function buildDirectUrl(token: string, fileName?: string | null, downloadName?: string | null): string {
   const displayName = downloadName?.trim() || fileName?.trim();
@@ -367,6 +419,9 @@ export async function handleAdminApi(
     const id = randomId(14);
     const key = `files/${id}`;
     const mime = req.headers.get("content-type") || "application/octet-stream";
+    // 前端探测出的媒体元数据（图片宽高 / 视频时长·帧率·码率等）。
+    // 探测放在浏览器做：Worker 里没有 ffprobe，而浏览器自带解码器，零额外成本。
+    const meta = parseMediaMeta(req.headers.get("x-file-meta"));
     const st = await storage(env);
     let resultSize = 0;
     try {
@@ -381,9 +436,14 @@ export async function handleAdminApi(
     // ── Bug #4 修复：D1 写入失败时清理已写入的 storage 对象 ──
     try {
       await env.db.prepare(
-        "INSERT INTO files(id, key, name, size, mime, path, owner, uploaded_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
+        `INSERT INTO files(id, key, name, size, mime, path, owner, uploaded_at,
+                           mtime, width, height, duration_ms, fps, v_bitrate, a_bitrate)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)`
       )
-        .bind(id, key, name, resultSize, mime, dir, me.name, Date.now())
+        .bind(
+          id, key, name, resultSize, mime, dir, me.name, Date.now(),
+          meta.mtime, meta.width, meta.height, meta.duration_ms, meta.fps, meta.v_bitrate, meta.a_bitrate
+        )
         .run();
     } catch (dbErr) {
       ctx.waitUntil(st.delete(key).catch(() => {}));
@@ -480,6 +540,34 @@ export async function handleAdminApi(
       }
       return json({ ok: true, purged });
     });
+  }
+
+  // ── 原始内容：仅登录会话可访问，供"缩略图模式"预览 ────────
+  // 为什么不复用 /d/{token}：直链是**公开**入口（不要求登录），
+  // 而缩略图必须在"未登录看不到任何文件"的前提下工作 —— 所以要有这条**会鉴权**的原始内容通道。
+  // 也刻意不返回 Content-Disposition: attachment：预览要 inline。
+  const rawMatch = /^\/api\/admin\/files\/([^/]+)\/raw$/.exec(path);
+  if (rawMatch && method === "GET") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const f = await env.db
+      .prepare("SELECT id, key, name, mime, owner FROM files WHERE id = ?1 AND deleted_at IS NULL")
+      .bind(rawMatch[1])
+      .first<{ id: string; key: string; name: string; mime: string; owner: string }>();
+    if (!f) return json({ error: msg(req, "文件不存在", "File not found") }, 404);
+    // 可见性：普通用户只能取自己名下的对象（管理员不限）
+    if (me.role !== "admin" && f.owner !== me.name) {
+      return json({ error: msg(req, "无权访问该文件", "Forbidden") }, 403);
+    }
+    const st = await storage(env);
+    const obj = await st.get(f.key);
+    if (!obj) return json({ error: msg(req, "存储对象不存在", "Object not found") }, 404);
+    const headers = new Headers();
+    headers.set("content-type", f.mime || "application/octet-stream");
+    headers.set("cache-control", "private, max-age=3600");
+    headers.set("x-content-type-options", "nosniff");
+    headers.set("content-disposition", `inline; filename*=UTF-8''${encodeURIComponent(f.name)}`);
+    return new Response(obj.body as ReadableStream, { headers });
   }
 
   // ── 删除文件 → 移入回收站（软删除，30 天内可还原）──
