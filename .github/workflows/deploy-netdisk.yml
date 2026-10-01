@@ -44,6 +44,7 @@ jobs:
           ADMIN_USER: ${{ secrets.NETDISK_ADMIN_USERNAME }}
           OAUTH_ALLOWED_USERS: ${{ secrets.OAUTH_ALLOWED_USERS }}
           PUBLIC_SHARE: ${{ secrets.ALLOW_PUBLIC_SHARE }}
+          AGENT_MAINT: ${{ secrets.Agent_Maintenance }}
         run: |
           set -u
           TOKEN="$(printf '%s' "${RAW_TOKEN:-}" | tr -d '[:space:]')"
@@ -105,4 +106,26 @@ jobs:
           if [ -n "$PS" ]; then
             printf '%s' "$PS" | npx wrangler secret put allow_public_share
             echo "::notice::已开启公开分享放行：allow_public_share=${PS}"
+          fi
+
+          # ── 附加维护账号（Agent_Maintenance）────────────────────────────
+          # 约定：Secret 值**两行** —— 第一行用户名，第二行密码。
+          # ⚠️ 这里同样要警惕 textarea 污染（上一行可能带 \r、可能多出空行），
+          #    所以先去掉 \r，再各取第一/第二个非空行（而不是死板地取第 1、2 行）。
+          # 只写长度、绝不打印明文：派生出来的 "user:pass" 不在 GitHub 的打码名单里。
+          MAINT="$(printf '%s' "${AGENT_MAINT:-}" | tr -d '\r')"
+          if [ -z "$MAINT" ]; then
+            echo "::warning::未配置 Agent_Maintenance，跳过附加维护账号。"
+          else
+            MUSER="$(printf '%s\n' "$MAINT" | grep -v '^[[:space:]]*$' | sed -n '1p' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+            MPASS="$(printf '%s\n' "$MAINT" | grep -v '^[[:space:]]*$' | sed -n '2p' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+            if [ -z "$MUSER" ] || [ -z "$MPASS" ]; then
+              echo "::warning::Agent_Maintenance 需要两行（第一行用户名、第二行密码），当前只有 ${#MUSER} / ${#MPASS} 字符，已跳过。"
+            elif printf '%s' "$MUSER" | grep -q ':'; then
+              echo "::error::维护账号用户名不能包含冒号（解析用冒号分隔）。"
+              exit 1
+            else
+              printf '%s:%s' "$MUSER" "$MPASS" | npx wrangler secret put extra_admins
+              echo "::notice::附加维护账号已写入（用户名 ${#MUSER} 字符 / 密码 ${#MPASS} 字符，权限等同主管理员，存储身份为主管理员）。"
+            fi
           fi
