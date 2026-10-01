@@ -79,6 +79,40 @@ export default {
       );
     }
   },
+
+  /**
+   * 定时任务 —— 清理回收站里超过 30 天的文件（真正删存储对象 + 数据库记录）。
+   * 触发时间见 wrangler.jsonc 的 triggers.crons。
+   *
+   * 注意：Worker 的 scheduled 与 fetch 共享同一份代码，但**没有请求上下文**，
+   * 所以这里不能依赖任何请求态（Cookie / Header），只做无身份的系统级清理。
+   */
+  async scheduled(
+    event: { cron: string; scheduledTime: number },
+    env: Env,
+    ctx: ExecutionContext
+  ): Promise<void> {
+    ctx.waitUntil(
+      (async () => {
+        try {
+          await ensureSchema(env);
+          const { collectExpired } = await import("./filestore");
+          const { ids, keys } = await collectExpired(env);
+          if (keys.length) {
+            const { createStorageProvider } = await import("./storage");
+            const { getSettings } = await import("./settings");
+            const st = await createStorageProvider(env, await getSettings(env));
+            await Promise.all(keys.map((k) => st.delete(k).catch(() => {})));
+          }
+          console.log(
+            `[cron ${event.cron}] 已彻底删除 ${ids.length} 个超过 ${30} 天的回收站文件`
+          );
+        } catch (err) {
+          console.error("[cron] 回收站清理失败:", err);
+        }
+      })()
+    );
+  },
 };
 
 async function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
