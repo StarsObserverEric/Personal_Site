@@ -3,6 +3,11 @@ import { ensureSchema, randomId, getSchemaStatus, repairDatabase } from "./db";
 import { generateCodes, makeBatchId, formatCodeStatus, findCodeByString } from "./codes";
 import { getSettings, updateSettings } from "./settings";
 import { checkAdminKey, checkAdminUser, createSession, verifySession, clientIp, rateLimitLogin, requireAdminIp } from "./auth";
+import {
+  resolvePrincipal, homeDirOf, landingDirOf, liveScopeOf,
+  canWritePath, normalizePath,
+  PUBLIC_DIR, ADMIN_PRIVATE_DIR, RECYCLE_BIN_DIR,
+} from "./vfs";
 import { pickLang } from "./i18n";
 import { hashPassword } from "./public";
 import { parseUA } from "./ua";
@@ -234,6 +239,7 @@ export async function handleAdminApi(
   // 会话检查
   if (path === "/api/admin/session" && method === "GET") {
     const s = await getSettings(env);
+    const me = await resolvePrincipal(req, env);
     return json({
       ok: true,
       site_title: s.siteTitle,
@@ -241,6 +247,13 @@ export async function handleAdminApi(
       cloudflare_recovery: !!env.totp_recovery,
       recovery_remaining: s.totpRecoveryHash ? s.totpRecoveryHash.split(",").filter(Boolean).length : 0,
       ui_theme: s.uiTheme,
+      // ── 权限骨架 ── 前端据此决定侧边栏显示哪些分组（普通用户看不到安全中心/系统设置）
+      user: me?.name ?? "admin",
+      role: me?.role ?? "admin",
+      is_admin: (me?.role ?? "admin") === "admin",
+      home_dir: me ? homeDirOf(me) : "/",
+      landing_dir: me ? landingDirOf(me) : null,
+      system_dirs: { public: PUBLIC_DIR, admin_private: ADMIN_PRIVATE_DIR, recycle_bin: RECYCLE_BIN_DIR },
     });
   }
 
@@ -307,17 +320,25 @@ export async function handleAdminApi(
 
   // ── 文件列表 ──────────────────────────────────────
   if (path === "/api/admin/files" && method === "GET") {
+    // 权限骨架：按身份过滤可见范围。
+    // 管理员看全部在架文件；普通用户只看自己 owner 的文件。
+    // 回收站文件（deleted_at 非空）一律不出现在这里。
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const scope = liveScopeOf(me);
     const { results } = await env.db.prepare(
-      `SELECT f.id, f.name, f.size, f.mime, f.uploaded_at,
+      `SELECT f.id, f.name, f.size, f.mime, f.uploaded_at, f.path, f.owner,
               (SELECT COUNT(*) FROM shares s WHERE s.file_id = f.id) AS share_count,
               (SELECT COALESCE(SUM(s.download_count), 0) FROM shares s WHERE s.file_id = f.id) AS download_count
-       FROM files f ORDER BY f.uploaded_at DESC`
-    ).all();
-    return json({ files: results ?? [] });
+       FROM files f WHERE ${scope.where} ORDER BY f.uploaded_at DESC`
+    ).bind(...scope.binds).all();
+    return json({ files: results ?? [], role: me.role, user: me.name, home_dir: homeDirOf(me) });
   }
 
   // ── 上传文件（原始流式 body，文件名放 X-File-Name 头） ──
   if (path === "/api/admin/upload" && method === "POST") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
     const rawName = req.headers.get("x-file-name");
     if (!rawName) return json({ error: msg(req, "缺少 X-File-Name 头", "Missing X-File-Name header") }, 400);
     let name: string;
@@ -325,6 +346,18 @@ export async function handleAdminApi(
       name = sanitizeName(decodeURIComponent(rawName));
     } catch {
       name = sanitizeName(rawName);
+    }
+    // 目标目录：前端用 X-File-Path 指定（可含中文，需 decode）；
+    // 缺省落在**自己的个人文件夹**，不再是根目录 —— 根目录只放用户文件夹与系统目录。
+    const rawDir = req.headers.get("x-file-path") || homeDirOf(me);
+    let dir: string | null;
+    try {
+      dir = normalizePath(decodeURIComponent(rawDir));
+    } catch {
+      dir = normalizePath(rawDir);
+    }
+    if (!dir || !canWritePath(me, dir)) {
+      return json({ error: msg(req, "没有权限写入该目录", "No permission to write to this directory") }, 403);
     }
     if (!req.body) return json({ error: msg(req, "请求体为空", "Empty request body") }, 400);
     const id = randomId(14);
@@ -344,9 +377,9 @@ export async function handleAdminApi(
     // ── Bug #4 修复：D1 写入失败时清理已写入的 storage 对象 ──
     try {
       await env.db.prepare(
-        "INSERT INTO files(id, key, name, size, mime, uploaded_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6)"
+        "INSERT INTO files(id, key, name, size, mime, path, owner, uploaded_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
       )
-        .bind(id, key, name, resultSize, mime, Date.now())
+        .bind(id, key, name, resultSize, mime, dir, me.name, Date.now())
         .run();
     } catch (dbErr) {
       ctx.waitUntil(st.delete(key).catch(() => {}));
