@@ -2094,7 +2094,7 @@ const isVidFile = f => /^video\//.test(f.mime || '') || /\.(mp4|m4v|mov|webm|mkv
      · 用户按 ± → bias 变化 → 在当前基础上增减。
    若把手动值写死，缩放就会失效（那是另一套需求）；若只保留自动，就没了手动。
    点中间的「列数」文字 = bias 归零 = 回到纯自动。 */
-const COL = { bias: 0, eff: 1 };
+const COL = { bias: 0, eff: 1, actual: 1 };
 
 /* ── 每个页签的"单列目标宽度"；unit=0 表示该页固定单列、不受列数控制 ──
    为什么按页签给不同目标宽：媒体的详细信息表要放 8 列（约需 880px），
@@ -2166,14 +2166,23 @@ function syncCols(opts){
 
 /* ═══ 分列渲染：两套容器共用同一个列数 ═══ */
 
+/** 页面把"实际渲染出的列数"回报给顶栏。
+ *  为什么需要：顶栏数字必须等于页面上真实存在的列数 —— 内容太少时会自动少分几列，
+ *  若仍显示目标值就会出现"写着 5 列、实际 2 列"的错位（用户报过同类 bug）。 */
+function reportActualCols(n){
+  COL.actual = n;
+  const el = $('#col-num'); if(el) el.textContent = String(n);
+}
+
 /** 卡片类容器：把直接子项按列优先均分进 .fcol。
  *  可重复调用 —— 已经分过列时会先从 .fcol 里拍平再重排，所以 ± 调整无需重新请求接口。 */
 function flowColumns(wrap){
   if(!wrap) return;
-  const n = Math.max(1, COL.eff);
   const items = [...wrap.children].flatMap(c =>
     (c.classList && c.classList.contains('fcol')) ? [...c.children] : [c]);
   if(!items.length) return;
+  // 每列至少 2 个才值得分列，否则会出现"一列一个、剩下几列空的"的破碎布局
+  const n = Math.max(1, Math.min(COL.eff, Math.floor(items.length / 2)));
   wrap.innerHTML = '';
   const cols = Array.from({ length: n }, () => {
     const d = document.createElement('div'); d.className = 'fcol'; return d;
@@ -2181,6 +2190,7 @@ function flowColumns(wrap){
   const per = Math.max(1, Math.ceil(items.length / n));
   items.forEach((el, i) => cols[Math.min(n - 1, Math.floor(i / per))].appendChild(el));
   cols.forEach(c => wrap.appendChild(c));
+  reportActualCols(n);
 }
 
 /** 按列数重排一个 .tbl-cols 容器（从首次分列时保存的源数据重建） */
@@ -2188,8 +2198,8 @@ function renderTableCols(container){
   const src = container.__tblSrc;
   if(!src) return;
   const rows = src.rows;
-  // 行数太少时分列反而更难读，直接单列
-  const n = (rows.length >= 6) ? Math.max(1, COL.eff) : 1;
+  // 同样：每列至少 2 行，行数太少就少分几列（并把实际列数回报给顶栏）
+  const n = Math.max(1, Math.min(COL.eff, Math.floor(rows.length / 2)));
   container.innerHTML = '';
   const grid = document.createElement('div');
   grid.className = 'fmc';
@@ -2205,6 +2215,7 @@ function renderTableCols(container){
     scroller.appendChild(tbl); box.appendChild(scroller); grid.appendChild(box);
   });
   container.appendChild(grid);
+  reportActualCols(n);
 }
 
 /** 把 #view 里的普通表格变成可随列数重排的容器。
