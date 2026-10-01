@@ -54,14 +54,16 @@ export function checkAdminKey(env: Env, input: string): boolean {
 /**
  * 校验管理员用户名 —— 与 admin 密码组成「用户名 + 密码」双字段登录。
  *
- * 刻意在未配置 `admin_username` 时返回 true：
- * 这样"先加用户名后配密码"或"忘了配"都不会把人锁在门外，
- * 只在显式设置了用户名时才真正启用双字段校验。
+ * 两条刻意的设计：
+ *  1. 未配置 `admin_username` 时返回 true：先加用户名后配、或忘了配，都不会把人锁在门外。
+ *  2. 用户名**大小写不敏感**。用户名不是秘密（GitHub 账号名本就大小写不敏感），
+ *     而大小写敏感换来的只是"记得当年怎么打"的风险 —— 收益为零、代价是可能进不去。
+ *     密码仍走严格的大小写敏感比较（safeEqual，恒定时间）。
  */
 export function checkAdminUser(env: Env, input: string): boolean {
-  const expected = (env.admin_username ?? "").trim();
+  const expected = (env.admin_username ?? "").trim().toLowerCase();
   if (!expected) return true;
-  return safeEqual((input ?? "").trim(), expected);
+  return safeEqual((input ?? "").trim().toLowerCase(), expected);
 }
 
 /**
