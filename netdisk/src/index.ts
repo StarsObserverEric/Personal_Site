@@ -12,6 +12,7 @@ import {
   handleOAuthProviders,
 } from "./oauth_handlers";
 import { findCodeByString, formatCodeStatus, checkCodeUsable, isCodeLenientFormat } from "./codes";
+import { FAVICON_ICO_B64, b64ToBytes } from "./favicon";
 
 /** 客户端真实 IP：从 CF 头或连接地址取 */
 function clientIp(req: Request): string {
@@ -94,6 +95,16 @@ async function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Res
       return Response.json({ error: "unauthorized" }, { status: 401 });
     }
     return serveLoginPage();
+  }
+
+  // 站点图标 —— 未登录也要能取到（登录页、错误页都在用它）
+  if (path === "/favicon.ico") {
+    return new Response(b64ToBytes(FAVICON_ICO_B64), {
+      headers: {
+        "content-type": "image/x-icon",
+        "cache-control": "public, max-age=604800, immutable",
+      },
+    });
   }
 
   // 登录页
