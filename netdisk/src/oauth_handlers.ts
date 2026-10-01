@@ -14,6 +14,7 @@
 import type { Env } from "./types";
 import { getSettings } from "./settings";
 import { decryptSecret } from "./crypto";
+import { createSession } from "./auth";
 import {
   getBuiltinProvider,
   BUILTIN_PROVIDERS,
@@ -213,9 +214,20 @@ export async function handleOAuthCallback(req: Request, env: Env): Promise<Respo
     return redirectBackWithMsg(req, "oauth_userinfo_failed");
   }
 
-  // 5. 发 OAuth 会话 Cookie
-  // cookie 里存的是 db id，方便 later check 时知道用的是哪个 provider
+  // 4.5 ⛔ 账号白名单 —— 只有名单内的账号可以登录，其他一律踢回登录页。
+  //     未配置 oauth_allowed_users 时视为"谁都不许"（fail closed），
+  //     避免"忘了配白名单 → 任何人都能登进来"这种最危险的默认值。
+  if (!isUserAllowed(env, user)) {
+    return redirectBackWithMsg(req, "oauth_account_not_allowed");
+  }
+
+  // 5. 发会话 Cookie
+  //    除 OAuth 下载会话（cd_oauth，1 小时，供分享页下载）外，
+  //    白名单账号**同时签发管理员会话**（cd_admin，7 天）
+  //    ⇒ GitHub 登录 = 管理员本人，权限完全等同于密码登录。
+  //    这里必须用 SameSite=Lax：回调来自 GitHub 的跨站重定向。
   const { cookie, secure } = await signOAuthSession(env, providerDbId, user.id);
+  const adminCookie = await createSession(env, url.protocol === "https:", "Lax");
   const originalRedirect = parseCookie(req.headers.get("cookie"), "cd_oauth_redirect") || "/";
 
   const setCookieParts: string[] = [cookie, "Path=/", "HttpOnly", "SameSite=Lax", "Max-Age=3600"];
@@ -227,9 +239,34 @@ export async function handleOAuthCallback(req: Request, env: Env): Promise<Respo
     status: 302,
     headers: {
       location: originalRedirect,
-      "set-cookie": [setCookie, clearRedirect].join(", "),
+      // 注意：join(", ") 拼多个 Cookie 在这里是安全的 —— 上面所有 Cookie 都用
+      // Max-Age 而非 Expires，值里不会出现逗号。
+      "set-cookie": [setCookie, adminCookie, clearRedirect].join(", "),
     },
   });
+}
+
+/**
+ * OAuth 账号白名单判定。
+ *   - `oauth_allowed_users` 按逗号/空格拆分；
+ *   - 条目**不含 `@`** → 与账号名（GitHub login）大小写不敏感比对；
+ *   - 条目**含 `@`**   → 与邮箱大小写不敏感比对；
+ *   - 名单为空 → 一律拒绝（fail closed）。
+ */
+function isUserAllowed(
+  env: Env,
+  user: { handle?: string; email?: string }
+): boolean {
+  const entries = (env.oauth_allowed_users ?? "")
+    .split(/[,\s]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  if (entries.length === 0) return false;
+  const handle = (user.handle ?? "").trim().toLowerCase();
+  const email = (user.email ?? "").trim().toLowerCase();
+  return entries.some((entry) =>
+    entry.includes("@") ? entry === email : entry === handle
+  );
 }
 
 /* ═══════════ GET /oauth/session ═══════════ */
