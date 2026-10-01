@@ -10,7 +10,7 @@ import {
 } from "./vfs";
 import {
   listDir, makeDir, moveToTrash, listTrash, restoreFromTrash, purgeFromTrash,
-  storageUsage, renameFile, renameDir, moveFiles,
+  storageUsage, renameFile, renameDir, moveEntries, listWritableDirs,
   HttpError,
 } from "./filestore";
 import { pickLang } from "./i18n";
@@ -375,11 +375,13 @@ export async function handleAdminApi(
     });
   }
 
-  // ── 文件列表 ──────────────────────────────────────
+  // ── 文件列表（**扁平**视图：跨目录的全部在架文件）────────
+  // 与 /api/admin/dirs 的分工（两个接口不是重复实现，是两种视角）：
+  //   /api/admin/dirs?path=   目录浏览：当前目录的子目录 + 当前目录的文件（文件管理器用）
+  //   /api/admin/files        扁平全库：所有目录下的文件，按上传时间倒序（统计/搜索/批量用）
+  // 权限骨架：按身份过滤可见范围（管理员全部；普通用户只看自己 owner 的）。
+  // 回收站文件（deleted_at 非空）一律不出现在这里。
   if (path === "/api/admin/files" && method === "GET") {
-    // 权限骨架：按身份过滤可见范围。
-    // 管理员看全部在架文件；普通用户只看自己 owner 的文件。
-    // 回收站文件（deleted_at 非空）一律不出现在这里。
     const me = await resolvePrincipal(req, env);
     if (!me) return json({ error: "unauthorized" }, 401);
     const scope = liveScopeOf(me);
@@ -598,14 +600,30 @@ export async function handleAdminApi(
     return withHttpError(async () => json({ ok: true, path: await renameDir(env, me, body.path!, body.name!) }));
   }
 
-  // ── 批量移动文件 ──────────────────────────────────
-  if (path === "/api/admin/files/move" && method === "POST") {
+  // ── 可写目录清单（「移动到…」下拉菜单用）──────────────
+  if (path === "/api/admin/dirs/writable" && method === "GET") {
     const me = await resolvePrincipal(req, env);
     if (!me) return json({ error: "unauthorized" }, 401);
-    const body = await readJson<{ ids?: string[]; target?: string }>(req);
+    return json({ ok: true, paths: await listWritableDirs(env, me) });
+  }
+
+  // ── 移动（文件 + 目录统一入口）──────────────────────
+  // 权限：管理员可移动任意用户的任意条目到任意目录（含跨用户子空间）；
+  //       普通用户只能在自己个人文件夹内移动。详见 filestore.assertMovable*。
+  // 说明：`/api/admin/files/move` 是上一版的入口，保留为**别名**，两个路径共用同一实现，
+  //       避免出现"两套逻辑各修一半"的情况。
+  if ((path === "/api/admin/move" || path === "/api/admin/files/move") && method === "POST") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const body = await readJson<{ ids?: string[]; dirs?: string[]; target?: string }>(req);
     const ids = Array.isArray(body.ids) ? body.ids.filter((x) => typeof x === "string") : [];
-    if (!ids.length) return json({ error: msg(req, "缺少 ids", "Missing ids") }, 400);
-    return withHttpError(async () => json({ ok: true, moved: await moveFiles(env, me, ids, body.target ?? "/") }));
+    const dirPaths = Array.isArray(body.dirs) ? body.dirs.filter((x) => typeof x === "string") : [];
+    if (!ids.length && !dirPaths.length) {
+      return json({ error: msg(req, "缺少 ids 或 dirs", "Missing ids or dirs") }, 400);
+    }
+    return withHttpError(async () =>
+      json({ ok: true, ...(await moveEntries(env, me, ids, dirPaths, body.target ?? "")) })
+    );
   }
 
   // ── 删除文件 → 移入回收站（软删除，30 天内可还原）──
