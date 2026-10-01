@@ -436,3 +436,204 @@ export async function collectExpired(
   );
   return { ids, keys: rows.map((r) => r.key) };
 }
+
+/* ═══════════ 容量统计（概览页的容量卡片 + 两张饼图）═══════════ */
+
+/** 按扩展名归档到类别 —— 前端拿 key 去查 i18n，不在这里拼中文/英文 */
+const TYPE_BY_EXT: Record<string, string> = {
+  png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", bmp: "image",
+  avif: "image", svg: "image", heic: "image", tif: "image", tiff: "image", psd: "image",
+  nef: "image", cr2: "image", arw: "image", dng: "image", ico: "image",
+  mp4: "video", mov: "video", mkv: "video", avi: "video", webm: "video", m4v: "video",
+  flv: "video", wmv: "video", mpg: "video",
+  // ⚠️ `.ts` 有两种可能：MPEG-TS 视频流 或 TypeScript 源码。归到 video
+  //（视频站/网盘里 .ts 更多是流媒体切片）；要改口径只需动这一行。
+  ts: "video",
+  mp3: "audio", wav: "audio", flac: "audio", m4a: "audio", aac: "audio", ogg: "audio", opus: "audio",
+  zip: "archive", rar: "archive", "7z": "archive", tar: "archive", gz: "archive",
+  bz2: "archive", xz: "archive", iso: "archive", dmg: "archive",
+  pdf: "doc", doc: "doc", docx: "doc", xls: "doc", xlsx: "doc", ppt: "doc", pptx: "doc",
+  txt: "doc", md: "doc", csv: "doc", json: "doc", xml: "doc", epub: "doc", mobi: "doc", rtf: "doc",
+  js: "code", html: "code", css: "code", py: "code", java: "code", c: "code",
+  cpp: "code", h: "code", go: "code", rs: "code", sh: "code", sql: "code",
+  yml: "code", yaml: "code", toml: "code", ini: "code", conf: "code",
+};
+
+/** 类别顺序固定，这样饼图的颜色/顺序在不同时间保持一致（否则颜色会乱跳） */
+export const TYPE_ORDER = ["image", "video", "audio", "doc", "archive", "code", "other"];
+
+export function classifyName(name: string): string {
+  const i = name.lastIndexOf(".");
+  if (i < 0 || i === name.length - 1) return "other";
+  const ext = name.slice(i + 1).toLowerCase();
+  return TYPE_BY_EXT[ext] || "other";
+}
+
+export interface UsageBreakdown {
+  /** 配额（字节）。默认 9.95 GB —— 刻意留出余量，避免顶到 R2 免费额度 10 GB */
+  quota_bytes: number;
+  used_bytes: number;
+  file_count: number;
+  trash_bytes: number;
+  trash_count: number;
+  by_owner: { key: string; bytes: number; count: number }[];
+  by_type: { key: string; bytes: number; count: number }[];
+}
+
+/**
+ * 统计用量。刻意**只查一条 SELECT 然后在 JS 里聚合**：
+ * 单条语句就能同时得到"按用户"和"按文件类型"两个维度，
+ * 比跑两条 GROUP BY 更简单，也不依赖 SQLite 的字符串函数。
+ * 个人网盘量级（万级文件）完全扛得住。
+ */
+export async function storageUsage(env: Env, me: Principal): Promise<UsageBreakdown> {
+  const scope = liveScopeOf(me);
+  const res = await env.db
+    .prepare(`SELECT owner, name, size FROM files WHERE ${scope.where}`)
+    .bind(...scope.binds)
+    .all<{ owner: string; name: string; size: number }>();
+  const rows = res.results ?? [];
+
+  const byOwner = new Map<string, { bytes: number; count: number }>();
+  const byType = new Map<string, { bytes: number; count: number }>();
+  let used = 0;
+  for (const r of rows) {
+    const size = Number(r.size) || 0;
+    used += size;
+    const o = byOwner.get(r.owner) ?? { bytes: 0, count: 0 };
+    o.bytes += size; o.count += 1;
+    byOwner.set(r.owner, o);
+    const t = classifyName(r.name);
+    const tv = byType.get(t) ?? { bytes: 0, count: 0 };
+    tv.bytes += size; tv.count += 1;
+    byType.set(t, tv);
+  }
+
+  // 回收站单独统计：它既占配额，又不该混进"在架文件"的饼图里
+  const trash = await env.db
+    .prepare(`SELECT COALESCE(SUM(size), 0) AS bytes, COUNT(*) AS cnt FROM files WHERE ${trashScopeOf(me).where}`)
+    .bind(...trashScopeOf(me).binds)
+    .first<{ bytes: number; cnt: number }>();
+
+  /**
+   * 配额（字节）。默认 9.95 GiB = 10,683,545,600 B ——
+   * 用 1024 进制是为了与界面其余地方的文件大小显示口径一致（fmtSize 也是 1024 进制），
+   * 这样卡片上正好显示成「9.95 GB」（十进制写法会被显示成 9.27 GB，与预期不符）。
+   * 若你希望严格按十进制 GB（10^9）计，把 Worker 变量 storage_quota_bytes 设为 9950000000 即可。
+   */
+  const quota = Number(env.storage_quota_bytes || 0) || 10_683_545_600;
+
+  return {
+    quota_bytes: quota,
+    used_bytes: used,
+    file_count: rows.length,
+    trash_bytes: Number(trash?.bytes || 0),
+    trash_count: Number(trash?.cnt || 0),
+    by_owner: [...byOwner.entries()]
+      .map(([key, v]) => ({ key, ...v }))
+      .sort((a, b) => b.bytes - a.bytes),
+    by_type: [...byType.entries()]
+      .map(([key, v]) => ({ key, ...v }))
+      .sort((a, b) => TYPE_ORDER.indexOf(a.key) - TYPE_ORDER.indexOf(b.key)),
+  };
+}
+
+/* ═══════════ 重命名 / 移动 ═══════════ */
+
+/** 取父目录：'/a/b' → '/a'；'/a' → '/' */
+function parentOf(path: string): string {
+  const i = path.lastIndexOf("/");
+  return i <= 0 ? "/" : path.slice(0, i);
+}
+
+/** 重命名文件（只改显示名，R2 的 key 不动 —— key 一旦变了就得搬对象，没必要） */
+export async function renameFile(
+  env: Env,
+  me: Principal,
+  id: string,
+  newName: string
+): Promise<string> {
+  const name = newName.trim();
+  if (!isSafeName(name)) throw new HttpError(400, "文件名不合法");
+  const f = await env.db
+    .prepare("SELECT id, name, path, owner, deleted_at FROM files WHERE id = ?1")
+    .bind(id)
+    .first<{ id: string; name: string; path: string; owner: string; deleted_at: number | null }>();
+  if (!f || f.deleted_at !== null) throw new HttpError(404, "文件不存在");
+  if (!canWritePath(me, f.path)) throw new HttpError(403, "无权限修改该文件");
+  await env.db.prepare("UPDATE files SET name = ?1 WHERE id = ?2").bind(name, id).run();
+  return name;
+}
+
+/** 重命名目录：连同其下所有子目录与文件的 path 一起改写 */
+export async function renameDir(
+  env: Env,
+  me: Principal,
+  dirInput: string,
+  newName: string
+): Promise<string> {
+  const dir = normalizePath(dirInput);
+  if (!dir || dir === "/") throw new HttpError(400, "不能重命名根目录");
+  const base = dir.split("/").filter(Boolean).pop() || "";
+  if (isSystemDirName(base)) throw new HttpError(403, "系统目录不可重命名");
+  if (!canWritePath(me, dir)) throw new HttpError(403, "无权限修改该目录");
+
+  const name = newName.trim();
+  if (!isSafeName(name) || isSystemDirName(name)) throw new HttpError(400, "目录名不合法");
+  const parent = parentOf(dir);
+  const next = joinPath(parent, name);
+  if (next === dir) return dir;
+
+  const dup = await env.db.prepare("SELECT 1 FROM directories WHERE path = ?1").bind(next).first();
+  if (dup) throw new HttpError(409, "同名目录已存在");
+
+  const oldLen = dir.length;
+  await env.db.batch([
+    // 目录自身
+    env.db.prepare("UPDATE directories SET path = ?1 WHERE path = ?2").bind(next, dir),
+    // 后代目录：newPrefix + 原路径的剩余部分（用 substr 而不是 LIKE，避免名字里的 % _ 被当通配符）
+    env.db
+      .prepare(
+        "UPDATE directories SET path = ?1 || substr(path, ?2) WHERE substr(path, 1, ?3) = ?4 AND length(path) > ?3"
+      )
+      .bind(next, oldLen + 1, oldLen, dir),
+    // 直接挂在该目录下的文件
+    env.db.prepare("UPDATE files SET path = ?1 WHERE path = ?2").bind(next, dir),
+    env.db
+      .prepare(
+        "UPDATE files SET path = ?1 || substr(path, ?2) WHERE substr(path, 1, ?3) = ?4 AND length(path) > ?3"
+      )
+      .bind(next, oldLen + 1, oldLen, dir),
+  ]);
+  return next;
+}
+
+/** 批量移动文件到目标目录 */
+export async function moveFiles(
+  env: Env,
+  me: Principal,
+  ids: string[],
+  targetInput: string
+): Promise<number> {
+  const target = normalizePath(targetInput);
+  if (!target) throw new HttpError(400, "目标路径非法");
+  if (!canWritePath(me, target)) throw new HttpError(403, "无权限写入目标目录");
+  if (target !== "/") {
+    const ok = await env.db
+      .prepare("SELECT 1 FROM directories WHERE path = ?1")
+      .bind(target)
+      .first();
+    if (!ok) throw new HttpError(404, "目标目录不存在");
+  }
+  let moved = 0;
+  for (const id of ids) {
+    const f = await env.db
+      .prepare("SELECT path FROM files WHERE id = ?1 AND deleted_at IS NULL")
+      .bind(id)
+      .first<{ path: string }>();
+    if (!f || !canWritePath(me, f.path)) continue;
+    await env.db.prepare("UPDATE files SET path = ?1 WHERE id = ?2").bind(target, id).run();
+    moved++;
+  }
+  return moved;
+}
