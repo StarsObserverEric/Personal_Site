@@ -69,5 +69,12 @@
     { "type": "Text", "globs": ["**/*.html"], "fallthrough": true }
   ],
 
+  // ═══════════════ 定时任务 ═══════════════
+  // 每天 UTC 03:17 触发 scheduled handler：清理回收站里超过 30 天的文件
+  // （真正删除 R2 存储对象 + D1 记录）。改这里等于改"自动清理"的执行时刻。
+  "triggers": {
+    "crons": ["17 3 * * *"]
+  },
+
   "observability": { "enabled": true }
 }
