@@ -13,14 +13,23 @@ function getCookie(req: Request, name: string): string | null {
   return null;
 }
 
-/** 登录成功后签发会话 Cookie */
-export async function createSession(env: Env, secure = false): Promise<string> {
+/** 登录成功后签发会话 Cookie
+ *
+ *  sameSite 默认 Strict；但 **OAuth 回调必须传 "Lax"**：
+ *  回调是浏览器从 GitHub 跨站重定向过来的，SameSite=Strict 的 Cookie
+ *  不会在紧接着那次顶层导航里被带上，用户会"刚登录完又看到登录页"。
+ */
+export async function createSession(
+  env: Env,
+  secure = false,
+  sameSite: "Strict" | "Lax" = "Strict"
+): Promise<string> {
   const exp = Date.now() + SESSION_TTL_MS;
   const sig = await hmacB64url(env.admin, String(exp));
   const token = `${exp}.${sig}`;
   // Secure 标志仅在 HTTPS 下追加，兼容本地 http 调试
   const secureFlag = secure ? "; Secure" : "";
-  return `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_TTL_MS / 1000}${secureFlag}`;
+  return `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=${sameSite}; Max-Age=${SESSION_TTL_MS / 1000}${secureFlag}`;
 }
 
 /** 校验会话 Cookie，返回是否有效 */
@@ -40,6 +49,19 @@ export async function verifySession(req: Request, env: Env): Promise<boolean> {
 export function checkAdminKey(env: Env, input: string): boolean {
   if (!env.admin) return false;
   return safeEqual(input, env.admin);
+}
+
+/**
+ * 校验管理员用户名 —— 与 admin 密码组成「用户名 + 密码」双字段登录。
+ *
+ * 刻意在未配置 `admin_username` 时返回 true：
+ * 这样"先加用户名后配密码"或"忘了配"都不会把人锁在门外，
+ * 只在显式设置了用户名时才真正启用双字段校验。
+ */
+export function checkAdminUser(env: Env, input: string): boolean {
+  const expected = (env.admin_username ?? "").trim();
+  if (!expected) return true;
+  return safeEqual((input ?? "").trim(), expected);
 }
 
 /**
