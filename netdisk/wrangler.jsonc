@@ -4,6 +4,13 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-09-01",
 
+  // ═══════════════ 自定义域（wrangler deploy 时自动绑定） ═══════════════
+  // custom_domain:true 会让 wrangler 直接在 Cloudflare 上把该子域绑到本 Worker，
+  // 无需再去控制台手点。zone starsobservereric.cc.cd 已在本账号，令牌含 Workers 路由:编辑。
+  "routes": [
+    { "pattern": "disk.starsobservereric.cc.cd", "custom_domain": true }
+  ],
+
   // ═══════════════ 基础设施资源绑定（自动查找/创建） ═══════════════
   // 本地开发时 wrangler dev 自动创建本地实例；
   // 生产部署时自动在 Cloudflare 上查找同名资源并绑定。
@@ -12,7 +19,7 @@
     {
       "binding": "db",
       "database_name": "cloud-r2pan",
-      "database_id": ""
+      "database_id": "10a5da07-2dbd-4944-a72b-a651070b645d"
     }
   ],
   // ⚠️ R2 是可选的 —— 如果你改用其他 S3 兼容存储（见下方 analytics_engine_datasets），
