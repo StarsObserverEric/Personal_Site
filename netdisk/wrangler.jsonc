@@ -31,16 +31,27 @@
     }
   ],
 
-  // ═══════════════ Workers Analytics Engine（全球分布分析） ═══════════════
-  // 每次下载都会向这个 dataset 写入一个数据点，包含国家、经纬度、文件名等。
-  // 绑定是可选的：没绑定时全球分布 Tab 会降级使用 D1 的 download_logs。
-  // 首次部署时 Cloudflare 会自动创建这个 dataset。
-  "analytics_engine_datasets": [
-    {
-      "binding": "analytics",
-      "dataset": "r2pan_downloads"
-    }
-  ],
+  // ═══════════════ Workers Analytics Engine（全球分布分析）—— 已停用 ═══════════════
+  // 为什么停用：Analytics Engine 是**账号级**功能，必须在控制台一次性启用，
+  // 否则 wrangler deploy 直接失败：
+  //   ✘ [ERROR] You need to enable Analytics Engine. [code: 10089]
+  // 而且它属于 Workers **付费**套餐能力（免费版仅 10 万次写入/天级别甚至不可用）。
+  //
+  // 代码里这个绑定本来就是**可选**的：
+  //   - types.ts:      analytics?: AnalyticsEngineDataset        （问号 = 可选）
+  //   - public.ts:606  if (env.analytics) { … }                  （有守卫）
+  //   - admin.ts       analytics_engine_available: !!env.analytics
+  // 不绑定时，"全球分布"Tab 自动降级用 D1 的 download_logs（无经纬度，只有国家）。
+  //
+  // 想恢复（需先升级 Workers 付费套餐 + 在控制台启用 Analytics Engine），
+  // 把下面这段的注释去掉再部署即可：
+  //
+  // "analytics_engine_datasets": [
+  //   {
+  //     "binding": "analytics",
+  //     "dataset": "r2pan_downloads"
+  //   }
+  // ],
 
   // ═══════════════ 密钥/敏感配置（不在仓库中声明） ═══════════════
   // 本地开发：创建 .dev.vars 文件（已 .gitignore）写入 admin=你的密钥
