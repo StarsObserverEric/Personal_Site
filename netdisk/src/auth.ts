@@ -67,6 +67,62 @@ export function checkAdminUser(env: Env, input: string): boolean {
 }
 
 /**
+ * 附加管理员账号：一行一组 `用户名:密码`（用 `extra_admins` 这个 Secret 注入）。
+ *
+ * 用途：给自动化 / 运维开一个独立入口，权限与主管理员完全等同，
+ * 但**存储身份仍然是主管理员**（见 vfs.ts 的 resolvePrincipal）——
+ * 因此用它会话上传的文件仍落在主管理员的个人文件夹里，不会在根目录
+ * 冒出一个新的"用户文件夹"。
+ *
+ * 为什么不做成"真正的多用户"：那是另一件事（要动 files.owner 的口径、
+ * 每个端点按 role 过滤……）。当前需求只是"多一个能随便测的入口"，
+ * 用别名方式实现最小，且不会污染数据模型。
+ */
+export function parseExtraAdmins(env: Env): { user: string; pass: string }[] {
+  const raw = env.extra_admins ?? "";
+  const out: { user: string; pass: string }[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith("#")) continue;
+    const i = t.indexOf(":");
+    if (i <= 0) continue;                        // 没有分隔符 / 空用户名 → 跳过
+    const user = t.slice(0, i).trim();
+    const pass = t.slice(i + 1);                 // 密码里允许再出现冒号
+    if (user && pass) out.push({ user, pass });
+  }
+  return out;
+}
+
+/**
+ * 校验一组登录凭证：主管理员 或 extra_admins 里的任意一组。
+ *
+ * ⚠️ 主账号分支**必须两个字段一起判断**：checkAdminUser 在未配置 admin_username 时
+ * 会返回 true（向后兼容"只设密码"），若写成短路判断就会退化成"密码对就行、用户名随便填"。
+ */
+export function verifyCredentials(env: Env, user: string, pass: string): boolean {
+  if (!pass) return false;
+  if (checkAdminUser(env, user) && checkAdminKey(env, pass)) return true;
+  const u = (user ?? "").trim().toLowerCase();
+  if (!u) return false;
+  for (const e of parseExtraAdmins(env)) {
+    // 用户名大小写不敏感（它不是秘密，没必要苛刻）；密码走恒定时间比较
+    if (e.user.toLowerCase() === u && safeEqual(pass, e.pass)) return true;
+  }
+  return false;
+}
+
+/**
+ * 敏感操作的"二次校验"密钥：主 admin 密码 或 任一附加账号的密码。
+ * 适用于那些要求用户重新输入密钥才能执行的动作（修复数据库 / 关闭两步验证等）——
+ * 附加账号是主人自己配置的，给它同等能力才符合"与管理员完全等同"的约定。
+ */
+export function verifyAdminReauth(env: Env, key: string): boolean {
+  if (!key) return false;
+  if (checkAdminKey(env, key)) return true;
+  return parseExtraAdmins(env).some((e) => safeEqual(key, e.pass));
+}
+
+/**
  * 登录接口的简易限流（每 isolate 内存计数，防暴力破解）。
  *
  * ── Bug #3 修复：Map 永不清理的内存泄漏 ──
