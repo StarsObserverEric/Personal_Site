@@ -219,6 +219,23 @@ const MIGRATION_STATEMENTS: string[] = [
   // directories.system —— 1 表示系统保留目录（Admin_Private / Recycle_Bin），不可删除/重命名
   "ALTER TABLE directories ADD COLUMN owner TEXT NOT NULL DEFAULT 'admin'",
   "ALTER TABLE directories ADD COLUMN system INTEGER NOT NULL DEFAULT 0",
+  // ═══════════ 媒体元数据（"详细信息"模式的扩展列）═══════════
+  // 说明：这些值**由前端在浏览器里探测后随上传一起提交**，Worker 只做校验与落库。
+  //   为什么不在服务端探测：Workers 运行时没有 ffprobe/ImageMagick 这类工具，
+  //   而浏览器原生就有解码器（Image / HTMLVideoElement），探测零成本、也不占 Worker CPU。
+  //   mtime      —— 文件的真实修改时间（File.lastModified），比 uploaded_at 更接近资源管理器的语义
+  //   width/height—— 图片、视频的像素尺寸
+  //   duration_ms—— 视频时长（毫秒）
+  //   fps        —— 视频帧率（可能为小数，例如 29.97）
+  //   v_bitrate  —— 视频轨码率（bit/s）
+  //   a_bitrate  —— 音频轨码率（bit/s）
+  "ALTER TABLE files ADD COLUMN mtime INTEGER",
+  "ALTER TABLE files ADD COLUMN width INTEGER",
+  "ALTER TABLE files ADD COLUMN height INTEGER",
+  "ALTER TABLE files ADD COLUMN duration_ms INTEGER",
+  "ALTER TABLE files ADD COLUMN fps REAL",
+  "ALTER TABLE files ADD COLUMN v_bitrate INTEGER",
+  "ALTER TABLE files ADD COLUMN a_bitrate INTEGER",
 ];
 
 /**
@@ -339,6 +356,13 @@ const EXPECTED_COLUMNS: { table: string; column: string }[] = [
   { table: "files", column: "original_path" },
   { table: "directories", column: "owner" },
   { table: "directories", column: "system" },
+  { table: "files", column: "mtime" },
+  { table: "files", column: "width" },
+  { table: "files", column: "height" },
+  { table: "files", column: "duration_ms" },
+  { table: "files", column: "fps" },
+  { table: "files", column: "v_bitrate" },
+  { table: "files", column: "a_bitrate" },
 ];
 
 /** 预期的索引（同样是可能缺失的） */
