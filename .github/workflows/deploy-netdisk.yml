@@ -29,21 +29,38 @@ jobs:
         run: |
           TOKEN="$(printf '%s' "${RAW_TOKEN:-}" | tr -d '[:space:]')"
           ACCOUNT="$(printf '%s' "${RAW_ACCOUNT:-}" | tr -d '[:space:]')"
-          echo "CF_API_TOKEN  : 原始 ${#RAW_TOKEN} 字符 -> 清理后 ${#TOKEN} 字符"
-          echo "CF_ACCOUNT_ID : 原始 ${#RAW_ACCOUNT} 字符 -> 清理后 ${#ACCOUNT} 字符"
+
+          echo "CF_ACCOUNT_ID: 原始 ${#RAW_ACCOUNT} 字符 -> 清理后 ${#ACCOUNT} 字符"
+          echo "CF_API_TOKEN : 原始 ${#RAW_TOKEN} 字符 -> 清理后 ${#TOKEN} 字符"
+
           if ! printf '%s' "$ACCOUNT" | grep -Eq '^[0-9a-f]{32}$'; then
             echo "::error::CF_ACCOUNT_ID 格式非法（清理后 ${#ACCOUNT} 字符，应为 32 位小写十六进制）"
             exit 1
           fi
-          if ! printf '%s' "$TOKEN" | grep -Eq '^[A-Za-z0-9_-]{38,48}$'; then
-            echo "::error::CF_API_TOKEN 格式非法（清理后 ${#TOKEN} 字符）"
-            exit 1
+
+          is_token() {
+            printf '%s' "$1" | grep -Eq '^[A-Za-z0-9_-]{40,80}$' || return 1
+            printf '%s' "$1" | grep -Eq '^[0-9a-f]{32}$' && return 1
+            return 0
+          }
+
+          if ! is_token "$TOKEN"; then
+            CANDS="$(printf '%s' "$RAW_TOKEN" | tr -c 'A-Za-z0-9_-' '\n' | grep -E '^[A-Za-z0-9_-]{40,80}$' | grep -Ev '^[0-9a-f]{32}$' | sort -u)"
+            N="$(printf '%s' "$CANDS" | grep -c . )"
+            if [ "$N" = "1" ]; then
+              TOKEN="$(printf '%s' "$CANDS" | head -n1)"
+              echo "::notice::已自动提取出唯一候选令牌（${#TOKEN} 字符）。"
+            else
+              echo "::error::CF_API_TOKEN 无法解析出唯一令牌（候选数 ${N}，清理后长度 ${#TOKEN}）。请在 Cloudflare 把令牌 Roll 一次拿到新值，只粘贴那一串值本身。"
+              exit 1
+            fi
           fi
+
           {
             echo "CLOUDFLARE_API_TOKEN=$TOKEN"
             echo "CLOUDFLARE_ACCOUNT_ID=$ACCOUNT"
           } >> "$GITHUB_ENV"
-          echo "凭证格式校验通过"
+          echo "凭证校验通过"
 
       - name: Install dependencies
         run: npm ci
