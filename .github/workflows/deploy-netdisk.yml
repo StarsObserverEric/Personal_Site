@@ -2,13 +2,12 @@ name: Deploy netdisk (Worker)
 
 # 手动触发（workflow_dispatch）。首次部署前需在 Cloudflare 控制台建好资源：
 #   1) R2 桶: cloud-r2pan            （仅按名字绑定，无需 ID）
-#   2) D1 库: cloud-r2pan            → 建好后把页面顶部的 Database ID 回填到
-#                                      netdisk/wrangler.jsonc 的 database_id（空串必失败）
-#   3) 自定义域/路由: 给 cloud-r2pan Worker 绑定 disk.starsobservereric.cc.cd
-#      （Worker → Settings → Triggers → Custom Domains，否则只活在 *.workers.dev）
-#   4) admin 后台密码（二选一）:
-#      a) 控制台 Worker → Settings → Variables and Secrets 手动加 admin（简单）
-#      b) 本仓库 Secrets 加 NETDISK_ADMIN，本工作流自动 wrangler secret put admin
+#   2) D1 库: cloud-r2pan            → Database ID 已回填 netdisk/wrangler.jsonc
+#                                      （10a5da07-2dbd-4944-a72b-a651070b645d）
+#   3) 自定义域: 已在 wrangler.jsonc 用 routes[].custom_domain=true 声明，
+#      本工作流会把它（disk.starsobservereric.cc.cd）自动绑到 Worker，无需去控制台手点。
+#   4) 后台登录密码: 仓库 Secret NETDISK_ADMIN_PASSWORD（本工作流自动注入为 Worker 的 admin 密钥）
+#      兼容旧名 NETDISK_ADMIN。上游登录页只校验密码，无用户名字段。
 #   5) （可选，对应防刷/DDoS）Turnstile: 控制台申请 sitekey+secret，加到 Worker 的
 #      turnstile_sitekey / turnstile_secret 两个变量
 # 要求：CF_API_TOKEN 具备 Workers 脚本 / D1 / R2 / Pages 编辑权限（已配齐）。
@@ -72,13 +71,26 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # admin 后台密码：若本仓库配置了 NETDISK_ADMIN 则自动注入 Worker；
-      # 否则请在 Cloudflare 控制台给 cloud-r2pan Worker 手动添加 admin 密钥。
-      - name: Set netdisk admin secret (optional, from NETDISK_ADMIN)
-        if: ${{ secrets.NETDISK_ADMIN != '' }}
+      # 网盘后台登录密码（上游只认一个名为 admin 的密钥；登录页只问密码，无用户名）。
+      # 优先取 NETDISK_ADMIN_PASSWORD，兼容旧名 NETDISK_ADMIN。两者都没设则跳过，
+      # 留待你在 Cloudflare 控制台手动加 admin。
+      - name: Set netdisk admin password
+        if: ${{ secrets.NETDISK_ADMIN_PASSWORD != '' || secrets.NETDISK_ADMIN != '' }}
         env:
-          NETDISK_ADMIN: ${{ secrets.NETDISK_ADMIN }}
-        run: printf '%s' "$NETDISK_ADMIN" | npx wrangler secret put admin --remote
+          PW_NEW: ${{ secrets.NETDISK_ADMIN_PASSWORD }}
+          PW_OLD: ${{ secrets.NETDISK_ADMIN }}
+          ADMIN_USER: ${{ secrets.NETDISK_ADMIN_USERNAME }}
+        run: |
+          PW="$(printf '%s' "${PW_NEW:-${PW_OLD:-}}" | tr -d '\r\n')"
+          if [ -z "$PW" ]; then
+            echo "::error::后台密码为空（NETDISK_ADMIN_PASSWORD / NETDISK_ADMIN 都没取到值）"
+            exit 1
+          fi
+          printf '%s' "$PW" | npx wrangler secret put admin --remote
+          echo "::notice::已把后台登录密码写入 Worker 的 admin 密钥（长度 ${#PW}）。"
+          if [ -n "$ADMIN_USER" ]; then
+            echo "::notice::检测到 NETDISK_ADMIN_USERNAME，但上游登录页只校验密码、无用户名字段，该 Secret 暂不参与鉴权。"
+          fi
 
       - name: Deploy Worker
         run: npx wrangler deploy
