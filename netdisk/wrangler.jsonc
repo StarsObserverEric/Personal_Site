@@ -4,6 +4,12 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-09-01",
 
+  // ═══════════════ 访问入口收敛 ═══════════════
+  // workers_dev:false = 关掉默认的 cloud-r2pan.<账号>.workers.dev 这个丑地址，
+  // 让网盘只能通过自定义域 disk.starsobservereric.cc.cd 访问（减少暴露面）。
+  // 想临时用回 workers.dev 调试，把它改成 true 再部署一次即可。
+  "workers_dev": false,
+
   // ═══════════════ 自定义域（wrangler deploy 时自动绑定） ═══════════════
   // custom_domain:true 会让 wrangler 直接在 Cloudflare 上把该子域绑到本 Worker，
   // 无需再去控制台手点。zone starsobservereric.cc.cd 已在本账号，令牌含 Workers 路由:编辑。
