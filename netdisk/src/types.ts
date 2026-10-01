@@ -17,6 +17,12 @@ export interface Env {
 
   /** 可选：管理员登录用户名。设置后登录需「用户名 + 密码」双字段；未设置则只校验密码（向后兼容）。 */
   admin_username?: string;
+  /**
+   * 可选：附加管理员账号，一行一组 `用户名:密码`。
+   * 权限与主管理员完全等同，但**存储身份仍为主管理员**（见 vfs.ts resolvePrincipal）——
+   * 因此用它的会话上传的文件仍落在主管理员个人文件夹，不会在根目录多出一个用户文件夹。
+   */
+  extra_admins?: string;
   /** 可选：OAuth 允许登录的账号白名单（逗号/空格分隔）。未设置 = 拒绝所有 OAuth 登录（fail closed）。 */
   oauth_allowed_users?: string;
   /** 可选：设为 "true" 时，把 /s/*、/d/*、/market 放行给未登录访客；默认全部需要登录。 */
