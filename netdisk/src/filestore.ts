@@ -22,6 +22,7 @@ import type { Principal } from "./vfs";
 import {
   normalizePath, isSafeName, isSystemDirName, canReadPath, canWritePath,
   visibleRootDirs, homeDirOf, liveScopeOf, trashScopeOf,
+  canMoveSource, canMoveTarget, canMoveDirInto, rootOf,
   PUBLIC_DIR, ADMIN_PRIVATE_DIR, RECYCLE_BIN_DIR, SYSTEM_DIRS,
 } from "./vfs";
 
@@ -199,6 +200,30 @@ export async function listDir(env: Env, me: Principal, dirInput: string): Promis
     files: filesRes.results ?? [],
     writable,
   };
+}
+
+/* ═══════════ 可写目录清单（"移动到…"选择器）═══════════ */
+
+/**
+ * 列出当前身份**可写**的全部目录路径，供「移动到…」的下拉菜单使用。
+ * 为什么单独做这个接口：让用户手打目标路径容易打错、也容易打到无权的位置；
+ * 直接给出"你能放进来的目录清单"，既好用又天然不会越权（筛选条件就是 canWritePath）。
+ *
+ * - 管理员：全部目录（可跨用户子空间），仅排除回收站
+ * - 普通用户：只有自己个人文件夹内的目录
+ * - 根目录 `/` 不在清单里（根目录只放用户文件夹，不允许直接放条目）
+ */
+export async function listWritableDirs(env: Env, me: Principal): Promise<string[]> {
+  const res = await env.db.prepare("SELECT path FROM directories").all<{ path: string }>();
+  const out: string[] = [];
+  for (const r of res.results ?? []) {
+    if (!r.path || r.path === "/") continue;
+    if (rootOf(r.path) === RECYCLE_BIN_DIR) continue;
+    if (!canWritePath(me, r.path)) continue;
+    out.push(r.path);
+  }
+  out.sort((a, b) => a.localeCompare(b, "zh"));
+  return out;
 }
 
 /* ═══════════ 新建目录 ═══════════ */
@@ -608,32 +633,120 @@ export async function renameDir(
   return next;
 }
 
-/** 批量移动文件到目标目录 */
-export async function moveFiles(
+/* ═══════════ 移动（文件 / 目录 统一入口）═══════════
+ *
+ * ── 权限规则（按用户明确要求实现）──────────────────────────
+ *   管理员    ：可移动**任意用户**的**任意**文件/目录到**任意**目录 ——
+ *               包括跨用户子空间（例如 /alice/x.png → /bob/），不受 owner 限制。
+ *   普通用户  ：只能移动**自己个人文件夹内**的条目，且目标也必须在自己的文件夹内。
+ *
+ * ── 与"移动权限"无关的结构性限制（所有角色一致）──────────
+ *   1. 不允许把条目**直接放到根目录 `/`** —— 根目录只容纳用户文件夹与系统目录；
+ *   2. `Recycle_Bin` 是派生视图（由 deleted_at 派生），既不能作为来源也不能作为目标，
+ *      要还原请走 /api/admin/trash/restore；
+ *   3. 目录不能移动进**自己的子树**里（那会把子树从树上摘掉，变成自己的孩子）。
+ */
+
+/** 校验"来源"是否可移动 —— 规则本体在 vfs.canMoveSource（纯函数，可单测） */
+function assertMovableSource(me: Principal, srcInput: string): string {
+  const src = normalizePath(srcInput);
+  if (!src || src === "/") throw new HttpError(400, "源路径非法");
+  if (!canMoveSource(me, src)) {
+    if (rootOf(src) === RECYCLE_BIN_DIR) {
+      throw new HttpError(403, "回收站里的内容请用「还原」，不能直接移动");
+    }
+    throw new HttpError(403, "只能移动自己文件夹里的内容");
+  }
+  return src;
+}
+
+/** 校验"目标目录"是否可写入 —— 规则本体在 vfs.canMoveTarget */
+function assertMovableTarget(me: Principal, targetInput: string): string {
+  const target = normalizePath(targetInput);
+  if (!target) throw new HttpError(400, "目标路径非法");
+  if (!canMoveTarget(me, target)) {
+    if (target === "/") throw new HttpError(400, "根目录只放用户文件夹，请选择具体目录");
+    if (rootOf(target) === RECYCLE_BIN_DIR) throw new HttpError(403, "不能移动到回收站");
+    throw new HttpError(403, "只能移动到自己文件夹里");
+  }
+  return target;
+}
+
+/** 目标目录必须真实存在（根目录除外，那里不允许放条目） */
+async function assertTargetExists(env: Env, target: string): Promise<void> {
+  const ok = await env.db
+    .prepare("SELECT 1 FROM directories WHERE path = ?1")
+    .bind(target)
+    .first();
+  if (!ok) throw new HttpError(404, "目标目录不存在");
+}
+
+export interface MoveResult {
+  files: number;
+  dirs: number;
+  moved: number;
+}
+
+/**
+ * 批量移动文件 + 目录到目标目录。
+ *
+ * 目录移动 = 改写目录自身与**全部后代**的 path（与 renameDir 同一套 SQL 写法：
+ * 用 substr 而不是 LIKE，避免名字里的 % _ 被当成通配符）。
+ */
+export async function moveEntries(
   env: Env,
   me: Principal,
   ids: string[],
+  dirPaths: string[],
   targetInput: string
-): Promise<number> {
-  const target = normalizePath(targetInput);
-  if (!target) throw new HttpError(400, "目标路径非法");
-  if (!canWritePath(me, target)) throw new HttpError(403, "无权限写入目标目录");
-  if (target !== "/") {
-    const ok = await env.db
-      .prepare("SELECT 1 FROM directories WHERE path = ?1")
-      .bind(target)
-      .first();
-    if (!ok) throw new HttpError(404, "目标目录不存在");
-  }
-  let moved = 0;
+): Promise<MoveResult> {
+  const target = assertMovableTarget(me, targetInput);
+  await assertTargetExists(env, target);
+
+  let files = 0;
+  let dirs = 0;
+
   for (const id of ids) {
     const f = await env.db
-      .prepare("SELECT path FROM files WHERE id = ?1 AND deleted_at IS NULL")
+      .prepare("SELECT path, name FROM files WHERE id = ?1 AND deleted_at IS NULL")
       .bind(id)
-      .first<{ path: string }>();
-    if (!f || !canWritePath(me, f.path)) continue;
+      .first<{ path: string; name: string }>();
+    if (!f) continue;
+    assertMovableSource(me, joinPath(f.path, f.name));
+    if (f.path === target) continue; // 已在该目录，跳过
     await env.db.prepare("UPDATE files SET path = ?1 WHERE id = ?2").bind(target, id).run();
-    moved++;
+    files++;
   }
-  return moved;
+
+  for (const raw of dirPaths) {
+    const src = assertMovableSource(me, raw);
+    const base = src.split("/").filter(Boolean).pop() || "";
+    if (isSystemDirName(base)) throw new HttpError(403, "系统目录不可移动");
+    // 不能把目录移进自己的子树（含自己）
+    if (!canMoveDirInto(src, target)) throw new HttpError(400, "不能把文件夹移动到它自己内部");
+    if (parentOf(src) === target) continue; // 已在该目录，跳过
+
+    const next = joinPath(target, base);
+    const dup = await env.db.prepare("SELECT 1 FROM directories WHERE path = ?1").bind(next).first();
+    if (dup) throw new HttpError(409, `目标目录下已存在同名文件夹「${base}」`);
+
+    const oldLen = src.length;
+    await env.db.batch([
+      env.db.prepare("UPDATE directories SET path = ?1 WHERE path = ?2").bind(next, src),
+      env.db
+        .prepare(
+          "UPDATE directories SET path = ?1 || substr(path, ?2) WHERE substr(path, 1, ?3) = ?4 AND length(path) > ?3"
+        )
+        .bind(next, oldLen + 1, oldLen, src),
+      env.db.prepare("UPDATE files SET path = ?1 WHERE path = ?2").bind(next, src),
+      env.db
+        .prepare(
+          "UPDATE files SET path = ?1 || substr(path, ?2) WHERE substr(path, 1, ?3) = ?4 AND length(path) > ?3"
+        )
+        .bind(next, oldLen + 1, oldLen, src),
+    ]);
+    dirs++;
+  }
+
+  return { files, dirs, moved: files + dirs };
 }
