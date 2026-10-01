@@ -42,6 +42,8 @@ jobs:
           ADMIN_PW_NEW: ${{ secrets.NETDISK_ADMIN_PASSWORD }}
           ADMIN_PW_OLD: ${{ secrets.NETDISK_ADMIN }}
           ADMIN_USER: ${{ secrets.NETDISK_ADMIN_USERNAME }}
+          OAUTH_ALLOWED_USERS: ${{ secrets.OAUTH_ALLOWED_USERS }}
+          PUBLIC_SHARE: ${{ secrets.ALLOW_PUBLIC_SHARE }}
         run: |
           set -u
           TOKEN="$(printf '%s' "${RAW_TOKEN:-}" | tr -d '[:space:]')"
@@ -73,15 +75,34 @@ jobs:
           echo "──── 1/2 部署 Worker ────"
           npx wrangler deploy
 
-          echo "──── 2/2 写入后台登录密码 ────"
+          echo "──── 2/2 写入登录凭证与 OAuth 白名单 ────"
           PW="$(printf '%s' "${ADMIN_PW_NEW:-${ADMIN_PW_OLD:-}}" | tr -d '\r\n')"
           if [ -z "$PW" ]; then
             echo "::warning::未配置 NETDISK_ADMIN_PASSWORD（或 NETDISK_ADMIN），已跳过；请到 Cloudflare 控制台给 cloud-r2pan Worker 手动添加 admin 密钥。"
           else
             printf '%s' "$PW" | npx wrangler secret put admin
-            echo "::notice::admin 密码已写入 Worker（长度 ${#PW}）。"
+            echo "::notice::登录密码已写入 Worker（长度 ${#PW}）。"
           fi
 
-          if [ -n "${ADMIN_USER:-}" ]; then
-            echo "::notice::NETDISK_ADMIN_USERNAME 已设置，但上游登录页只校验密码、无用户名字段，暂不参与鉴权。"
+          # 管理员用户名 —— 与密码构成「双字段登录」；未配置时服务端只校验密码（向后兼容）
+          U="$(printf '%s' "${ADMIN_USER:-}" | tr -d '\r\n')"
+          if [ -z "$U" ]; then
+            echo "::warning::未配置 NETDISK_ADMIN_USERNAME，登录将只校验密码。"
+          else
+            printf '%s' "$U" | npx wrangler secret put admin_username
+            echo "::notice::登录用户名已写入 Worker（长度 ${#U}）。"
+          fi
+
+          # OAuth 登录白名单 —— 只有名单内账号可通过 GitHub 登录。
+          # 服务端若读不到这个变量会一律拒绝 OAuth 登录（fail closed），
+          # 所以这里给了兜底默认值，避免漏配导致"功能失效"而不是"被滥用"。
+          ALLOWED="$(printf '%s' "${OAUTH_ALLOWED_USERS:-StarsObserverEric}" | tr -d '\r\n')"
+          printf '%s' "$ALLOWED" | npx wrangler secret put oauth_allowed_users
+          echo "::notice::OAuth 登录白名单已写入：${ALLOWED}"
+
+          # 可选：把 /s/*、/d/*、/market 放行给未登录访客（默认不放行，即全部需要登录）
+          PS="$(printf '%s' "${PUBLIC_SHARE:-}" | tr -d '\r\n')"
+          if [ -n "$PS" ]; then
+            printf '%s' "$PS" | npx wrangler secret put allow_public_share
+            echo "::notice::已开启公开分享放行：allow_public_share=${PS}"
           fi
