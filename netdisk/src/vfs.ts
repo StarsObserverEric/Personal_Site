@@ -156,6 +156,43 @@ export function canWritePath(p: Principal, path: string): boolean {
   return top === p.name;
 }
 
+/* ═══════════ 移动权限 ═══════════
+ *
+ * 规则（用户明确要求）：
+ *   管理员   ：可以移动**任何用户**的**任何**条目到**任何**目录，包括跨用户子空间
+ *              （/alice/a.png → /bob/ 是允许的）。
+ *   普通用户 ：只能移动**自己个人文件夹内**的条目，且目标也必须在自己文件夹内。
+ *
+ * 三条与角色无关的结构性限制，写在下面两个判断里各一次：
+ *   1. 根目录 `/` 不接受条目 —— 那里只放用户文件夹与系统目录；
+ *   2. `Recycle_Bin` 是派生视图，既不能当来源也不能当目标（还原请走 trash/restore）；
+ *   3. 目录不能移动进自己的子树（单独由 canMoveDirInto 判断）。
+ */
+export function canMoveSource(p: Principal, srcInput: string): boolean {
+  const src = normalizePath(srcInput);
+  if (!src || src === "/") return false;
+  if (rootOf(src) === RECYCLE_BIN_DIR) return false;
+  if (p.role === "admin") return true;                 // 不限 owner、不限子空间
+  return isInside(src, homeDirOf(p));                  // 只能是自己的东西
+}
+
+/** 目标目录必须是可写位置（普通用户 = 自己的个人文件夹子树） */
+export function canMoveTarget(p: Principal, targetInput: string): boolean {
+  const target = normalizePath(targetInput);
+  if (!target || target === "/") return false;
+  if (rootOf(target) === RECYCLE_BIN_DIR) return false;
+  if (p.role === "admin") return true;                 // 可跨用户子空间
+  return isInside(target, homeDirOf(p));
+}
+
+/** 把 srcDir 挪进 targetDir 是否合法（不能是它自己或它的子孙） */
+export function canMoveDirInto(srcDir: string, targetDir: string): boolean {
+  const s = normalizePath(srcDir);
+  const t = normalizePath(targetDir);
+  if (!s || !t || s === "/") return false;
+  return !isInside(t, s);
+}
+
 /**
  * 该身份在根目录下应该看到哪些顶层文件夹。
  * 管理员：全部用户文件夹 + public + Admin_Private + Recycle_Bin
