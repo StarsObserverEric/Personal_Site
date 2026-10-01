@@ -23,6 +23,8 @@ export interface Env {
    * 因此用它的会话上传的文件仍落在主管理员个人文件夹，不会在根目录多出一个用户文件夹。
    */
   extra_admins?: string;
+  /** 可选：容量配额（字节，十进制口径）。默认 9.95 GB —— 留余量避免顶到 R2 免费额度 10 GB。 */
+  storage_quota_bytes?: string;
   /** 可选：OAuth 允许登录的账号白名单（逗号/空格分隔）。未设置 = 拒绝所有 OAuth 登录（fail closed）。 */
   oauth_allowed_users?: string;
   /** 可选：设为 "true" 时，把 /s/*、/d/*、/market 放行给未登录访客；默认全部需要登录。 */
