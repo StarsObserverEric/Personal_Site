@@ -18,10 +18,11 @@ jobs:
           node-version: 22
 
       # 为什么需要这一步：
-      # 在 GitHub 网页上粘贴 Secret 时很容易带进换行/空格，而 wrangler 会把凭证塞进 HTTP 头，
-      # 头值里只要有换行就会直接崩：
-      #   ✘ [ERROR] Headers.set: "..." is an invalid header value.
-      # 所以这里先剔除所有空白字符，再校验格式；格式不对就明确报出是哪个 Secret 脏了。
+      # 1) GitHub 的 Secret 输入框是 textarea，粘贴整块内容时会把换行一起存进去；
+      #    而 wrangler 会把凭证塞进 HTTP 头，头值里含换行就直接崩：
+      #      ✘ [ERROR] Headers.set: "..." is an invalid header value.
+      # 2) 令牌值本身可能被粘进了多个东西（令牌 + 账户 ID + …）。
+      # 这里先剔除空白，再校验；不合格就尝试从原始值里自动挑出唯一候选令牌。
       - name: Validate Cloudflare credentials
         env:
           RAW_TOKEN: ${{ secrets.CF_API_TOKEN }}
@@ -29,24 +30,40 @@ jobs:
         run: |
           TOKEN="$(printf '%s' "${RAW_TOKEN:-}" | tr -d '[:space:]')"
           ACCOUNT="$(printf '%s' "${RAW_ACCOUNT:-}" | tr -d '[:space:]')"
-          echo "CF_API_TOKEN  : 原始 ${#RAW_TOKEN} 字符 -> 清理后 ${#TOKEN} 字符"
-          echo "CF_ACCOUNT_ID : 原始 ${#RAW_ACCOUNT} 字符 -> 清理后 ${#ACCOUNT} 字符"
-          if [ "${#TOKEN}" != "${#RAW_TOKEN}" ] || [ "${#ACCOUNT}" != "${#RAW_ACCOUNT}" ]; then
-            echo "::warning::Secret 值里含空白/换行字符，本次运行已自动剔除；建议删掉重建以免混淆"
-          fi
+
+          echo "CF_ACCOUNT_ID: 原始 ${#RAW_ACCOUNT} 字符 -> 清理后 ${#ACCOUNT} 字符"
+          echo "CF_API_TOKEN : 原始 ${#RAW_TOKEN} 字符 -> 清理后 ${#TOKEN} 字符"
+
           if ! printf '%s' "$ACCOUNT" | grep -Eq '^[0-9a-f]{32}$'; then
             echo "::error::CF_ACCOUNT_ID 格式非法（清理后 ${#ACCOUNT} 字符，应为 32 位小写十六进制，例如 06d58159887a160484d5649c03322607）"
             exit 1
           fi
-          if ! printf '%s' "$TOKEN" | grep -Eq '^[A-Za-z0-9_-]{38,48}$'; then
-            echo "::error::CF_API_TOKEN 格式非法（清理后 ${#TOKEN} 字符，Cloudflare 令牌应是 40 字符左右的 A-Za-z0-9_- ）"
-            exit 1
+
+          is_token() {
+            printf '%s' "$1" | grep -Eq '^[A-Za-z0-9_-]{40,80}$' || return 1
+            printf '%s' "$1" | grep -Eq '^[0-9a-f]{32}$' && return 1
+            return 0
+          }
+
+          if ! is_token "$TOKEN"; then
+            echo "::warning::CF_API_TOKEN 不是一个纯令牌（清理后 ${#TOKEN} 字符），尝试从 Secret 里自动提取…"
+            CANDS="$(printf '%s' "$RAW_TOKEN" | tr -c 'A-Za-z0-9_-' '\n' | grep -E '^[A-Za-z0-9_-]{40,80}$' | grep -Ev '^[0-9a-f]{32}$' | sort -u)"
+            N="$(printf '%s' "$CANDS" | grep -c . )"
+            echo "候选令牌数量: ${N}"
+            if [ "$N" = "1" ]; then
+              TOKEN="$(printf '%s' "$CANDS" | head -n1)"
+              echo "::notice::已自动提取出唯一候选令牌（${#TOKEN} 字符），本次继续部署；建议稍后把 Secret 改成纯令牌值。"
+            else
+              echo "::error::CF_API_TOKEN 无法解析出唯一令牌（候选数 ${N}，清理后长度 ${#TOKEN}）。请在 Cloudflare 把令牌 Roll 一次拿到新值，只粘贴那一串值本身，不要整块复制。"
+              exit 1
+            fi
           fi
+
           {
             echo "CLOUDFLARE_API_TOKEN=$TOKEN"
             echo "CLOUDFLARE_ACCOUNT_ID=$ACCOUNT"
           } >> "$GITHUB_ENV"
-          echo "凭证格式校验通过"
+          echo "凭证校验通过"
 
       - name: Deploy to Cloudflare Pages
         run: npx --yes wrangler@latest pages deploy homepage --project-name starsobserveric --branch main --commit-dirty=true
