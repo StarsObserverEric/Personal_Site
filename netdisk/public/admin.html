@@ -271,23 +271,23 @@ body {
 .sb-toggle:hover { background: var(--sf-strong); }
 .sb-toggle:active { transform: scale(.94); }
 
-/* ── 宽屏自动分列（瀑布流）──────────────
-   用法：容器加 class="auto-cols"，用 --col-min 指定单列目标宽度。
-   浏览器按可用宽度自动决定列数：1080p 的 #view（约 850px）→ 2 列；
-   4K（约 3700px）→ 8 列左右。卡片自上而下填入一列，新内容自动在下方续排。
+/* ── 宽屏自动分列（统一机制：grid + JS 分列）──────────────
+   容器加 class="auto-cols"，JS 调用 flowColumns() 把直接子项按列优先均分进 .fcol。
+   列数由 --ui-cols 决定 —— 与文件管理器/其它列表页**共用同一个全局列数**。
 
-   注意：这是 CSS **多列（column flow）**，阅读顺序是"先填满一列再开下一列"，
-   适合彼此独立的卡片（设置项、统计块）。对要求严格横向阅读顺序的表格/文件列表
-   不适用 —— 那种要用 grid，留给文件管理器重构。 */
+   ⚠️ 为什么**不再用 CSS `columns`（多列）**：
+   多列在内容放不下时会把卡片从中间切开，并把文字溢出压到下一张卡片上
+   （实测：设置页「下载市场作为首页」的说明文字压到下方卡片）。
+   grid 的每个单元格是独立的，永远不会重叠；代价是需要 JS 分列 —— 但反正列数
+   本来就是 JS 算出来的，这个代价为零。 */
 .auto-cols {
-  columns: var(--col-min, 400px);
-  column-gap: 14px;
+  display: grid; gap: 14px; align-items: start;
+  grid-template-columns: repeat(var(--ui-cols, 1), minmax(0, 1fr));
 }
-.auto-cols > * {
-  break-inside: avoid;
-  -webkit-column-break-inside: avoid;
-  margin-bottom: 14px;
-}
+.auto-cols > .fcol { min-width: 0; }
+
+/* ── 列数控制：不支持分列的页面整体压暗并禁用 ── */
+.colctl.off { opacity: .45; }
 
 /* ── 顶栏：列数调节（自动 + 手动）───────────────
    中间显示的是"当前生效列数"；**点它**即把手动偏置归零，回到纯自动。
@@ -637,6 +637,21 @@ body {
 }
 .group .row input[type=number]:focus { border-color: rgba(10,132,255,.7); }
 .group .row input[type=text] { width: 170px; text-align: left; }
+
+/* 卡片内的补充说明（.tip）——⚠️ 之前这个类**完全没有样式**：
+   .row 有 18px 左右内边距，而 .tip 是 .row 的兄弟节点，于是文字顶到卡片边框、
+   在 20px 圆角处看着像"溢出卡片"。这里补上左右内边距与字号，与 .row 对齐。 */
+.group > .tip {
+  padding: 6px 18px 14px;
+  font-size: 12.5px; color: var(--text-3); line-height: 1.6;
+}
+/* 长 URL / 无空格长串（如 /admin、邮箱、token）在窄列里必须能断行，
+   否则会把容器撑宽、压到相邻列上。 */
+.group .row .info .d,
+.group > .tip,
+.field .tip,
+.crumb a,
+.thumb .mt .n { overflow-wrap: anywhere; }
 
 /* iOS 开关 */
 .switch { position: relative; width: 50px; height: 30px; flex: none; cursor: pointer; }
@@ -1942,9 +1957,13 @@ function switchTab(tab){
   }
   const v = $('#view');
   v.innerHTML = '<div class="spin"></div>';
-  (TAB_LOADERS[tab] || (() => Promise.resolve()))().catch(e => {
-    v.innerHTML = `<div class="glass section"><div class="empty"><div class="icon">⚠️</div>${esc(e.message === 'unauthorized' ? t('loadingErr') : e.message)}</div></div>`;
-  });
+  // 先按新页签算列数（--ui-cols / 顶栏数字 / ± 可用状态），再让 loader 渲染
+  syncCols();
+  (TAB_LOADERS[tab] || (() => Promise.resolve()))()
+    .then(() => reflowCurrentTab(false))   // 渲染完成后统一分列：卡片页 flowColumns、表格页 splitListTables
+    .catch(e => {
+      v.innerHTML = `<div class="glass section"><div class="empty"><div class="icon">⚠️</div>${esc(e.message === 'unauthorized' ? t('loadingErr') : e.message)}</div></div>`;
+    });
 }
 
 /* ═══════════ 概览 ═══════════ */
@@ -2027,6 +2046,8 @@ async function loadOverview(){
 /* ═══════════ 文件管理器状态 ═══════════
    FM.data 直接就是 /api/admin/dirs 的返回（含 dirs / files / breadcrumb / writable）。 */
 const FM = { path: null, view: 'details', thumb: 150, data: null, start: null };
+/** 缩略图尺寸滑杆的范围（HTML 与 JS 共用，改一处即可） */
+const THUMB_MIN = 80, THUMB_MAX = 320;
 
 function fmLoadPrefs(){
   try{
@@ -2075,34 +2096,155 @@ const isVidFile = f => /^video\//.test(f.mime || '') || /\.(mp4|m4v|mov|webm|mkv
    点中间的「列数」文字 = bias 归零 = 回到纯自动。 */
 const COL = { bias: 0, eff: 1 };
 
-/** 单列目标宽度：详细信息一张表要放 8 列，820px 才不会糊成一团；缩略图用滑杆的值 */
-function colUnit(){ return FM.view === 'thumbs' ? FM.thumb : 820; }
+/* ── 每个页签的"单列目标宽度"；unit=0 表示该页固定单列、不受列数控制 ──
+   为什么按页签给不同目标宽：媒体的详细信息表要放 8 列（约需 880px），
+   设置页是卡片（400px 足够）。用同一个目标宽会互相拖累。
+   bias 是**全局**的：在任意页面按 ± ，所有支持分列的页面都会一起变。 */
+const TAB_LAYOUT = {
+  files:    { unit: 880 },   // 缩略图模式改用滑杆值，见 colUnit()
+  settings: { unit: 400 },
+  storage:  { unit: 900 },
+  shares:   { unit: 900 },
+  direct:   { unit: 900 },
+  logs:     { unit: 900 },
+  codes:    { unit: 900 },
+  security: { unit: 900 },   // 仅下方审计表参与分列；顶部筛选条是独立元素，天然单列
+  bans:     { unit: 0 },     // 手动封禁 IP —— 用户明确要求固定单列
+  global:   { unit: 0 },     // 全球下载分布 —— 图表，固定单列满宽
+  overview: { unit: 0 },     // 概览自带栅格
+  webdav:   { unit: 0 },
+};
+function layoutOf(tab){ return TAB_LAYOUT[tab || currentTab] || { unit: 0 }; }
+function supportsCols(tab){ return layoutOf(tab).unit > 0; }
 function colMax(){ return FM.view === 'thumbs' ? 20 : 6; }
 
-function autoCols(){
+/** 当前页签的单列目标宽度（0 = 不支持分列） */
+function colUnit(){
+  const lay = layoutOf();
+  if(lay.unit <= 0) return 0;
+  // 文件页的缩略图模式：单块目标宽 = 滑杆值 —— 这就是滑杆与列数的联动点
+  if(currentTab === 'files' && FM.view === 'thumbs') return FM.thumb;
+  return lay.unit;
+}
+function viewAvail(){
   const host = $('#view');
-  const avail = Math.max(320, (host ? host.clientWidth : window.innerWidth) - 2);
-  return Math.max(1, Math.floor(avail / colUnit()));
+  return Math.max(280, (host && host.clientWidth ? host.clientWidth : window.innerWidth) - 2);
+}
+function autoCols(){
+  const unit = colUnit();
+  return unit <= 0 ? 1 : Math.max(1, Math.floor(viewAvail() / unit));
+}
+/** 缩略图模式：由"生效列数"反推单块宽度，用于把滑杆位置同步过去（双向联动） */
+function thumbFromCols(){
+  const v = Math.round(viewAvail() / Math.max(1, COL.eff));
+  return Math.min(THUMB_MAX, Math.max(THUMB_MIN, v));
 }
 
 /** 算出生效列数 → 写进 CSS 变量 → 更新顶栏标签。返回是否发生了变化 */
-function syncCols(){
-  const eff = Math.min(colMax(), Math.max(1, autoCols() + COL.bias));
+function syncCols(opts){
+  const fromSlider = !!(opts && opts.fromSlider);
+  const can = supportsCols();
+  const max = can ? colMax() : 1;
+  const eff = can ? Math.min(max, Math.max(1, autoCols() + COL.bias)) : 1;
   const changed = eff !== COL.eff;
   COL.eff = eff;
   document.documentElement.style.setProperty('--ui-cols', String(eff));
   const num = $('#col-num'); if(num) num.textContent = String(eff);
-  const lbl = $('#col-lbl'); if(lbl) lbl.classList.toggle('manual', COL.bias !== 0);
+  const lbl = $('#col-lbl'); if(lbl) lbl.classList.toggle('manual', can && COL.bias !== 0);
+  const ctl = $('#colctl'); if(ctl) ctl.classList.toggle('off', !can);
   const mi = $('#col-minus'), pl = $('#col-plus');
-  if(mi) mi.disabled = eff <= 1;
-  if(pl) pl.disabled = eff >= colMax();
+  if(mi) mi.disabled = !can || eff <= 1;
+  if(pl) pl.disabled = !can || eff >= max;
+  // 缩略图模式：把滑杆同步成"与列数一致的大小"。
+  // 用户正在拖滑杆时不回写 —— 否则会跟手指较劲（值被反复覆盖）。
+  if(can && !fromSlider && currentTab === 'files' && FM.view === 'thumbs'){
+    const s = $('#fm-thumb');
+    if(s){ const v = String(thumbFromCols()); if(s.value !== v){ s.value = v; FM.thumb = +v; } }
+  }
   return changed;
 }
 
-/** 列数变化后：详细信息模式需要按新列数**重新切分表格**，缩略图交给 CSS 重排即可 */
+/* ═══ 分列渲染：两套容器共用同一个列数 ═══ */
+
+/** 卡片类容器：把直接子项按列优先均分进 .fcol。
+ *  可重复调用 —— 已经分过列时会先从 .fcol 里拍平再重排，所以 ± 调整无需重新请求接口。 */
+function flowColumns(wrap){
+  if(!wrap) return;
+  const n = Math.max(1, COL.eff);
+  const items = [...wrap.children].flatMap(c =>
+    (c.classList && c.classList.contains('fcol')) ? [...c.children] : [c]);
+  if(!items.length) return;
+  wrap.innerHTML = '';
+  const cols = Array.from({ length: n }, () => {
+    const d = document.createElement('div'); d.className = 'fcol'; return d;
+  });
+  const per = Math.max(1, Math.ceil(items.length / n));
+  items.forEach((el, i) => cols[Math.min(n - 1, Math.floor(i / per))].appendChild(el));
+  cols.forEach(c => wrap.appendChild(c));
+}
+
+/** 按列数重排一个 .tbl-cols 容器（从首次分列时保存的源数据重建） */
+function renderTableCols(container){
+  const src = container.__tblSrc;
+  if(!src) return;
+  const rows = src.rows;
+  // 行数太少时分列反而更难读，直接单列
+  const n = (rows.length >= 6) ? Math.max(1, COL.eff) : 1;
+  container.innerHTML = '';
+  const grid = document.createElement('div');
+  grid.className = 'fmc';
+  splitColumns(rows, n).forEach(col => {
+    const box = document.createElement('div'); box.className = 'fcol';
+    const scroller = document.createElement('div'); scroller.style.overflowX = 'auto';
+    const tbl = document.createElement('table'); tbl.className = src.cls;
+    const thead = document.createElement('thead'); thead.innerHTML = src.thead;
+    const tbody = document.createElement('tbody');
+    // ⚠️ 行元素是"搬"过去而不是复制 ⇒ 每行只出现一次，不会产生重复 id / 重复绑定
+    col.forEach(r => tbody.appendChild(r));
+    tbl.appendChild(thead); tbl.appendChild(tbody);
+    scroller.appendChild(tbl); box.appendChild(scroller); grid.appendChild(box);
+  });
+  container.appendChild(grid);
+}
+
+/** 把 #view 里的普通表格变成可随列数重排的容器。
+ *  rebuild=false：首次（把 table 换成容器并保存源数据）
+ *  rebuild=true ：重排（列数变了，用保存的源数据重建） */
+function splitListTables(root, rebuild){
+  if(!root) return;
+  if(rebuild){
+    root.querySelectorAll('.tbl-cols').forEach(c => { if(c.__tblSrc) renderTableCols(c); });
+    return;
+  }
+  [...root.querySelectorAll('table.tbl')].forEach(t => {
+    const tbody = t.tBodies[0];
+    if(!tbody) return;
+    const container = document.createElement('div');
+    container.className = 'tbl-cols';
+    container.__tblSrc = {
+      cls: t.className,
+      thead: t.tHead ? t.tHead.innerHTML : '',
+      rows: [...tbody.rows],
+    };
+    const holder = t.parentElement;          // 通常是 <div style="overflow-x:auto">
+    holder.replaceWith(container);
+    renderTableCols(container);
+  });
+}
+
+/** 列数变化后重排当前页（不重新请求接口） */
+function reflowCurrentTab(rebuild){
+  const wrap = $('#view .auto-cols');
+  if(wrap) flowColumns(wrap);
+  splitListTables($('#view'), !!rebuild);
+}
+
 function applyCols(){
   const changed = syncCols();
-  if(changed && FM.view === 'details' && FM.data) renderFileList();
+  if(!changed) return;
+  // 文件页要按新列数重新切分表格；其它页签就地重排（rebuild=true 用已保存的行数据重建）
+  if(currentTab === 'files'){ if(FM.data) renderFileList(); return; }
+  reflowCurrentTab(true);
 }
 function saveColBias(){ try{ localStorage.setItem('colBias', String(COL.bias)); }catch(e){} }
 function loadColBias(){
@@ -2309,7 +2451,7 @@ function renderFM(){
         <button id="fm-v-thumbs" class="${FM.view === 'thumbs' ? 'on' : ''}">▦ ${esc(t('fmViewThumbs'))}</button>
       </div>
       ${FM.view === 'thumbs' ? `<div class="fm-sizer">${esc(t('fmThumbSize'))}
-        <input type="range" id="fm-thumb" min="80" max="320" step="10" value="${FM.thumb}"></div>` : ''}
+        <input type="range" id="fm-thumb" min="${THUMB_MIN}" max="${THUMB_MAX}" step="10" value="${FM.thumb}"></div>` : ''}
     </div>
     <div class="fm-drop" id="fm-drop">${esc(t('fmDropHint'))}</div>
     <div id="fm-upload-list"></div>
@@ -2318,13 +2460,23 @@ function renderFM(){
   </div>`;
 
   const host = $('#fm-host'), fi = $('#fm-file'), drop = $('#fm-drop');
+  // ⚠️ 面包屑的点击必须**在这里**绑定，不能指望 renderFileList → bindRowActions：
+  //    空目录时 renderFileList 会提前 return，于是面包屑从来没被绑上事件、
+  //    表现为"进了子目录后点『根目录』没反应"（用户报的 bug）。
+  $$('[data-go]').forEach(a => a.onclick = e => { e.stopPropagation(); loadFiles(a.dataset.go); });
   $('#fm-upload').onclick = () => fi.click();
   fi.onchange = () => { const l = [...fi.files]; fi.value = ''; if(l.length) uploadFiles(l); };
   const nd = $('#fm-newdir'); if(nd) nd.onclick = newFolderDialog;
   $('#fm-v-details').onclick = () => { FM.view = 'details'; fmSavePrefs(); renderFM(); };
   $('#fm-v-thumbs').onclick  = () => { FM.view = 'thumbs';  fmSavePrefs(); renderFM(); };
   const th = $('#fm-thumb');
-  if(th) th.oninput = () => { FM.thumb = +th.value; fmSavePrefs(); syncCols(); renderFileList(); };
+  if(th) th.oninput = () => {
+    FM.thumb = +th.value; fmSavePrefs();
+    // 滑杆 ↔ 列数 双向联动：滑杆变大 → 单块目标宽变大 → 列数自然变少。
+    // fromSlider 告诉 syncCols 不要回写滑杆位置，否则会跟用户的手指较劲。
+    syncCols({ fromSlider: true });
+    renderFileList();
+  };
 
   // 拖拽上传：单独的投放条 + 整个文件区都能接
   const allowed = d.writable !== false;
