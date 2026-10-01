@@ -638,7 +638,7 @@ const I18N = {
     copied: '已复制到剪贴板', save: '保存设置', saved: '设置已保存', forever: '永久',
     switchTo: 'EN', topbarSub: '管理后台 · Cloudflare Workers + R2',
     // 登录
-    loginSubtitle: '管理后台 · 请输入管理密钥登录', keyPlaceholder: '管理密钥 (admin)',
+    loginSubtitle: '管理后台 · 请输入用户名和密码登录', keyPlaceholder: '密码', userPlaceholder: '用户名',
     // 标签
     tabOverview: '概览', tabFiles: '文件', tabStorage: '存储浏览', tabShares: '分享', tabDirect: '直链', tabLogs: '记录', tabBans: '封禁', tabGlobal: '全球分布', tabSecurity: '安全', tabSettings: '设置', tabWebDAV: 'WebDAV',
     navContent: '内容管理', navAnalytics: '运营分析', navSecurity: '安全中心', navSystem: '系统设置',
@@ -998,7 +998,7 @@ const I18N = {
     copied: 'Copied to clipboard', save: 'Save Settings', saved: 'Settings saved', forever: 'Forever',
     switchTo: '中文', topbarSub: 'Admin console · Cloudflare Workers + R2',
     // 登录
-    loginSubtitle: 'Admin console · Enter your admin key to continue', keyPlaceholder: 'Admin key (admin)',
+    loginSubtitle: 'Admin console · Enter your username and password', keyPlaceholder: 'Password', userPlaceholder: 'Username',
     // 标签
     tabOverview: 'Overview', tabFiles: 'Files', tabStorage: 'Storage', tabShares: 'Shares', tabDirect: 'Direct', tabLogs: 'Logs', tabBans: 'Bans', tabGlobal: 'Global', tabSecurity: 'Security', tabSettings: 'Settings', tabWebDAV: 'WebDAV',
     navContent: 'Content', navAnalytics: 'Analytics', navSecurity: 'Security', navSystem: 'System',
@@ -1462,7 +1462,8 @@ function closeModal(){ $('#modal')?.remove(); }
 /* ═══════════ 登录视图（支持 2FA 两阶段） ═══════════ */
 let siteTitle = 'cloud-r2pan';
 let loginStage = 'password'; // 'password' | '2fa' | 'recovery'
-let savedLoginKey = ''; // 第一阶段输入的 admin key
+let savedLoginKey = ''; // 第一阶段输入的密码
+let savedLoginUser = ''; // 第一阶段输入的用户名（2FA 阶段要一起回传）
 
 function showLogin(){
   document.title = t('docTitle', {site: siteTitle});
@@ -1472,7 +1473,8 @@ function showLogin(){
       <h1>${esc(siteTitle)}</h1>
       <div class="sub">${esc(t('loginSubtitle'))}</div>
       <form id="login-form">
-        <input type="password" id="login-key" placeholder="${esc(t('keyPlaceholder'))}" autocomplete="current-password" autofocus>
+        <input type="text" id="login-user" placeholder="${esc(t('userPlaceholder'))}" autocomplete="username" autocapitalize="off" spellcheck="false" autofocus>
+        <input type="password" id="login-key" placeholder="${esc(t('keyPlaceholder'))}" autocomplete="current-password">
         <button class="btn primary" type="submit">${esc(t('login'))}</button>
         <div class="err" id="login-err"></div>
       </form>
@@ -1480,12 +1482,14 @@ function showLogin(){
     `);
     $('#login-form').onsubmit = async e => {
       e.preventDefault();
+      const username = $('#login-user').value.trim();
       const key = $('#login-key').value.trim();
-      if(!key) return;
+      if(!username || !key) return;
+      savedLoginUser = username;
       savedLoginKey = key;
       $('#login-err').textContent = '';
       try{
-        const r = await api('/api/admin/login', { method:'POST', body: JSON.stringify({ key }) });
+        const r = await api('/api/admin/login', { method:'POST', body: JSON.stringify({ username, key }) });
         if(r.need_2fa){
           loginStage = '2fa';
           showLogin();
@@ -1518,7 +1522,7 @@ function showLogin(){
       if(!/^\d{6}$/.test(code)) return;
       $('#login-err').textContent = '';
       try{
-        const r = await api('/api/admin/login', { method:'POST', body: JSON.stringify({ key: savedLoginKey, code }) });
+        const r = await api('/api/admin/login', { method:'POST', body: JSON.stringify({ username: savedLoginUser, key: savedLoginKey, code }) });
         showApp();
       }catch(err){
         $('#login-err').textContent = err.message;
@@ -1546,7 +1550,7 @@ function showLogin(){
       if(!code) return;
       $('#login-err').textContent = '';
       try{
-        const r = await api('/api/admin/login', { method:'POST', body: JSON.stringify({ key: savedLoginKey, code }) });
+        const r = await api('/api/admin/login', { method:'POST', body: JSON.stringify({ username: savedLoginUser, key: savedLoginKey, code }) });
         if(r.recovery_used && r.totp_reset){
           // 弹出恢复成功提示
           openModal(`
@@ -3474,7 +3478,7 @@ async function loadSettings(){
       if (!url || !user) { result.textContent = LANG==='zh' ? '请填写 URL 和用户名' : 'URL and username required'; result.style.color = '#fda293'; return; }
       result.textContent = '…'; result.style.color = 'var(--text-3)';
       try {
-        const payload: any = { provider: 'webdav', url, username: user };
+        const payload = { provider: 'webdav', url, username: user };
         if (pwd) payload.password = pwd;
         const r = await api('/api/admin/storage/test', { method: 'POST', body: JSON.stringify(payload) });
         if (r.ok) {
@@ -3484,7 +3488,7 @@ async function loadSettings(){
           result.textContent = `✗ ${esc(t('storageBackendConnectFail'))}: ${r.message || r.error || ''}`;
           result.style.color = '#fda293';
         }
-      } catch (e: any) {
+      } catch (e) {
         result.textContent = `✗ ${esc(t('storageBackendConnectFail'))}: ${e?.message ?? ''}`;
         result.style.color = '#fda293';
       }
@@ -3494,7 +3498,7 @@ async function loadSettings(){
       const url = $('#wd-url').value.trim().replace(/\/+$/, '');
       const user = $('#wd-user').value.trim();
       const pwdVal = $('#wd-pwd').value.trim();
-      const body: any = {
+      const body = {
         storage_provider: 'webdav',
         storage_webdav_url: url,
         storage_webdav_username: user,
