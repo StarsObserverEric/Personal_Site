@@ -2,7 +2,7 @@ import type { Env } from "./types";
 import { ensureSchema, randomId, getSchemaStatus, repairDatabase } from "./db";
 import { generateCodes, makeBatchId, formatCodeStatus, findCodeByString } from "./codes";
 import { getSettings, updateSettings } from "./settings";
-import { checkAdminKey, checkAdminUser, createSession, verifySession, clientIp, rateLimitLogin, requireAdminIp } from "./auth";
+import { checkAdminKey, checkAdminUser, verifyCredentials, verifyAdminReauth, createSession, verifySession, clientIp, rateLimitLogin, requireAdminIp } from "./auth";
 import {
   resolvePrincipal, homeDirOf, landingDirOf, liveScopeOf,
   canWritePath, normalizePath,
@@ -180,7 +180,7 @@ export async function handleAdminApi(
     const body = await readJson<{ key: string; code?: string; username?: string }>(req);
     // 双字段校验：用户名（仅当配置了 admin_username）+ 密码，任一不符都拒绝。
     // 提示语故意不区分"用户名错"还是"密码错"，避免泄露到底哪一半是对的。
-    if (!body.key || !checkAdminUser(env, body.username ?? "") || !checkAdminKey(env, body.key)) {
+    if (!body.key || !verifyCredentials(env, body.username ?? "", body.key)) {
       ctx.waitUntil(writeLoginLog(env, req, "login", "fail", "invalid_credentials"));
       return json({ error: msg(req, "用户名或密码错误", "Invalid username or password") }, 401);
     }
@@ -951,7 +951,7 @@ export async function handleAdminApi(
   // ── 2FA Setup：生成新 secret（未启用，需要 verify+enable 才生效） ──
   if (path === "/api/admin/2fa/setup" && method === "POST") {
     const body = await readJson<{ admin_key: string }>(req);
-    if (!body.admin_key || !checkAdminKey(env, body.admin_key)) {
+    if (!body.admin_key || !verifyAdminReauth(env, body.admin_key)) {
       return json({ error: msg(req, "管理密钥错误", "Invalid admin key") }, 401);
     }
     // 如果已经启用，需要先 disable 再 setup（或者覆盖）
@@ -968,7 +968,7 @@ export async function handleAdminApi(
   // ── 2FA Enable：验证通过后写入 settings（加密存储）并生成恢复码 ──
   if (path === "/api/admin/2fa/enable" && method === "POST") {
     const body = await readJson<{ admin_key: string; code: string; secret: string }>(req);
-    if (!body.admin_key || !checkAdminKey(env, body.admin_key)) {
+    if (!body.admin_key || !verifyAdminReauth(env, body.admin_key)) {
       return json({ error: msg(req, "管理密钥错误", "Invalid admin key") }, 401);
     }
     if (!/^[A-Z2-7]{16,}$/.test((body.secret || "").toUpperCase())) {
@@ -1001,7 +1001,7 @@ export async function handleAdminApi(
   // ── 2FA Disable：关闭 2FA（需验证 admin key） ──
   if (path === "/api/admin/2fa/disable" && method === "POST") {
     const body = await readJson<{ admin_key: string }>(req);
-    if (!body.admin_key || !checkAdminKey(env, body.admin_key)) {
+    if (!body.admin_key || !verifyAdminReauth(env, body.admin_key)) {
       return json({ error: msg(req, "管理密钥错误", "Invalid admin key") }, 401);
     }
     await updateSettings(env, {
@@ -1015,7 +1015,7 @@ export async function handleAdminApi(
   // ── 重新生成恢复码（覆盖旧的，旧的全部失效） ──
   if (path === "/api/admin/2fa/regen-recovery" && method === "POST") {
     const body = await readJson<{ admin_key: string }>(req);
-    if (!body.admin_key || !checkAdminKey(env, body.admin_key)) {
+    if (!body.admin_key || !verifyAdminReauth(env, body.admin_key)) {
       return json({ error: msg(req, "管理密钥错误", "Invalid admin key") }, 401);
     }
     const s = await getSettings(env);
