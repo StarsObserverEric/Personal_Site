@@ -72,10 +72,11 @@ jobs:
         run: npm ci
 
       # 网盘后台登录密码（上游只认一个名为 admin 的密钥；登录页只问密码，无用户名）。
-      # 优先取 NETDISK_ADMIN_PASSWORD，兼容旧名 NETDISK_ADMIN。两者都没设则跳过，
-      # 留待你在 Cloudflare 控制台手动加 admin。
+      # 优先取 NETDISK_ADMIN_PASSWORD，兼容旧名 NETDISK_ADMIN。
+      # ⚠️ 不能用 if: ${{ secrets.X != '' }} —— GitHub 的 if 条件里没有 secrets 上下文，
+      #    会导致 "Unrecognized named-value: 'secrets'" 整个工作流解析失败（0s 红叉）。
+      #    改为把判断放进 shell：没配就 warning + 跳过，不中断部署。
       - name: Set netdisk admin password
-        if: ${{ secrets.NETDISK_ADMIN_PASSWORD != '' || secrets.NETDISK_ADMIN != '' }}
         env:
           PW_NEW: ${{ secrets.NETDISK_ADMIN_PASSWORD }}
           PW_OLD: ${{ secrets.NETDISK_ADMIN }}
@@ -83,8 +84,8 @@ jobs:
         run: |
           PW="$(printf '%s' "${PW_NEW:-${PW_OLD:-}}" | tr -d '\r\n')"
           if [ -z "$PW" ]; then
-            echo "::error::后台密码为空（NETDISK_ADMIN_PASSWORD / NETDISK_ADMIN 都没取到值）"
-            exit 1
+            echo "::warning::未配置 NETDISK_ADMIN_PASSWORD（或 NETDISK_ADMIN），已跳过写入；请到 Cloudflare 控制台给 cloud-r2pan Worker 手动添加 admin 密钥。"
+            exit 0
           fi
           printf '%s' "$PW" | npx wrangler secret put admin --remote
           echo "::notice::已把后台登录密码写入 Worker 的 admin 密钥（长度 ${#PW}）。"
