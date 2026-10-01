@@ -10,6 +10,7 @@ import {
 } from "./vfs";
 import {
   listDir, makeDir, moveToTrash, listTrash, restoreFromTrash, purgeFromTrash,
+  storageUsage, renameFile, renameDir, moveFiles,
   HttpError,
 } from "./filestore";
 import { pickLang } from "./i18n";
@@ -568,6 +569,43 @@ export async function handleAdminApi(
     headers.set("x-content-type-options", "nosniff");
     headers.set("content-disposition", `inline; filename*=UTF-8''${encodeURIComponent(f.name)}`);
     return new Response(obj.body as ReadableStream, { headers });
+  }
+
+  // ── 容量统计（概览页容量卡片 + 按用户/按类型两张饼图）──
+  if (path === "/api/admin/storage-usage" && method === "GET") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    return withHttpError(async () => json({ ok: true, ...(await storageUsage(env, me)) }));
+  }
+
+  // ── 重命名文件 ────────────────────────────────────
+  if (path === "/api/admin/files/rename" && method === "POST") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const body = await readJson<{ id?: string; name?: string }>(req);
+    if (!body.id || !body.name) return json({ error: msg(req, "缺少 id 或 name", "Missing id or name") }, 400);
+    // 先取成常量再进闭包：TS 的类型收窄在回调里会失效（对象属性是可变的）
+    const id = body.id, newName = body.name;
+    return withHttpError(async () => json({ ok: true, name: await renameFile(env, me, id, newName) }));
+  }
+
+  // ── 重命名目录 ────────────────────────────────────
+  if (path === "/api/admin/dirs/rename" && method === "POST") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const body = await readJson<{ path?: string; name?: string }>(req);
+    if (!body.path || !body.name) return json({ error: msg(req, "缺少 path 或 name", "Missing path or name") }, 400);
+    return withHttpError(async () => json({ ok: true, path: await renameDir(env, me, body.path!, body.name!) }));
+  }
+
+  // ── 批量移动文件 ──────────────────────────────────
+  if (path === "/api/admin/files/move" && method === "POST") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const body = await readJson<{ ids?: string[]; target?: string }>(req);
+    const ids = Array.isArray(body.ids) ? body.ids.filter((x) => typeof x === "string") : [];
+    if (!ids.length) return json({ error: msg(req, "缺少 ids", "Missing ids") }, 400);
+    return withHttpError(async () => json({ ok: true, moved: await moveFiles(env, me, ids, body.target ?? "/") }));
   }
 
   // ── 删除文件 → 移入回收站（软删除，30 天内可还原）──
