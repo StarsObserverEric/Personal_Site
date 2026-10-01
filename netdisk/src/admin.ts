@@ -8,6 +8,10 @@ import {
   canWritePath, normalizePath,
   PUBLIC_DIR, ADMIN_PRIVATE_DIR, RECYCLE_BIN_DIR,
 } from "./vfs";
+import {
+  listDir, makeDir, moveToTrash, listTrash, restoreFromTrash, purgeFromTrash,
+  HttpError,
+} from "./filestore";
 import { pickLang } from "./i18n";
 import { hashPassword } from "./public";
 import { parseUA } from "./ua";
@@ -389,20 +393,106 @@ export async function handleAdminApi(
     return json({ ok: true, id, name, size: resultSize }, 201);
   }
 
-  // ── 删除文件（连带存储对象、分享、日志） ──────────
+  // ═══════════ 文件管理器：目录 / 回收站 ═══════════
+  // 统一把 HttpError 转成 JSON 响应，避免每个分支都写一遍 try/catch
+  const withHttpError = async (fn: () => Promise<Response>): Promise<Response> => {
+    try {
+      return await fn();
+    } catch (e: unknown) {
+      if (e instanceof HttpError) return json({ error: msg(req, e.message, e.message) }, e.status);
+      throw e;
+    }
+  };
+
+  // ── 列目录（按身份过滤 + 排除回收站文件）──────────
+  if (path === "/api/admin/dirs" && method === "GET") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const dir = new URL(req.url).searchParams.get("path") || "/";
+    return withHttpError(async () => json({ ok: true, ...(await listDir(env, me, dir)) }));
+  }
+
+  // ── 新建文件夹 ────────────────────────────────────
+  if (path === "/api/admin/dirs" && method === "POST") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const body = await readJson<{ parent?: string; name?: string }>(req);
+    return withHttpError(async () => {
+      const dir = await makeDir(env, me, body.parent ?? "/", body.name ?? "");
+      return json({ ok: true, dir });
+    });
+  }
+
+  // ── 删除目录（递归软删除 → 回收站）────────────────
+  if (path === "/api/admin/dirs/delete" && method === "POST") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const body = await readJson<{ path?: string }>(req);
+    return withHttpError(async () => {
+      const n = await moveToTrash(env, me, { dirPaths: [body.path ?? ""] });
+      return json({ ok: true, trashed: n });
+    });
+  }
+
+  // ── 批量删除文件 → 回收站 ─────────────────────────
+  if (path === "/api/admin/files/delete" && method === "POST") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const body = await readJson<{ ids?: string[] }>(req);
+    const ids = Array.isArray(body.ids) ? body.ids.filter((x) => typeof x === "string") : [];
+    if (!ids.length) return json({ error: msg(req, "缺少 ids", "Missing ids") }, 400);
+    return withHttpError(async () => json({ ok: true, trashed: await moveToTrash(env, me, { fileIds: ids }) }));
+  }
+
+  // ── 回收站：列表 ──────────────────────────────────
+  if (path === "/api/admin/trash" && method === "GET") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    return withHttpError(async () => json({ ok: true, items: await listTrash(env, me) }));
+  }
+
+  // ── 回收站：还原 ──────────────────────────────────
+  if (path === "/api/admin/trash/restore" && method === "POST") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const body = await readJson<{ ids?: string[] }>(req);
+    const ids = Array.isArray(body.ids) ? body.ids.filter((x) => typeof x === "string") : [];
+    return withHttpError(async () => json({ ok: true, restored: await restoreFromTrash(env, me, ids) }));
+  }
+
+  // ── 回收站：彻底删除（不可恢复，会真的删存储对象）──
+  if (path === "/api/admin/trash" && method === "DELETE") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const url = new URL(req.url);
+    const emptyAll = url.searchParams.get("all") === "1";
+    return withHttpError(async () => {
+      const ids = emptyAll
+        ? (await listTrash(env, me)).map((t) => t.id)
+        : (await readJson<{ ids?: string[] }>(req).catch(() => ({ ids: [] as string[] }))).ids ?? [];
+      const clean = ids.filter((x) => typeof x === "string");
+      if (!clean.length) return json({ ok: true, purged: 0 });
+      const { purged, keys } = await purgeFromTrash(env, me, clean);
+      // 存储对象删除放到后台，不阻塞响应
+      if (keys.length) {
+        const st = await storage(env);
+        ctx.waitUntil(Promise.all(keys.map((k) => st.delete(k).catch(() => {}))).then(() => {}));
+      }
+      return json({ ok: true, purged });
+    });
+  }
+
+  // ── 删除文件 → 移入回收站（软删除，30 天内可还原）──
+  // 原实现是"硬删除 + 立刻抹掉存储对象"，没有后悔药。
+  // 现在一律先进回收站；要真正抹掉请走 DELETE /api/admin/trash。
   const fileMatch = /^\/api\/admin\/files\/([^/]+)$/.exec(path);
   if (fileMatch && method === "DELETE") {
-    const fileId = fileMatch[1];
-    const file = await env.db.prepare("SELECT key FROM files WHERE id = ?1").bind(fileId).first<{ key: string }>();
-    if (!file) return json({ error: msg(req, "文件不存在", "File not found") }, 404);
-    await env.db.batch([
-      env.db.prepare("DELETE FROM shares WHERE file_id = ?1").bind(fileId),
-      env.db.prepare("DELETE FROM download_logs WHERE file_id = ?1").bind(fileId),
-      env.db.prepare("DELETE FROM files WHERE id = ?1").bind(fileId),
-    ]);
-    const st = await storage(env);
-    ctx.waitUntil(st.delete(file.key).catch(() => {}));
-    return json({ ok: true });
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    return withHttpError(async () => {
+      const n = await moveToTrash(env, me, { fileIds: [fileMatch[1]] });
+      return json({ ok: true, trashed: n });
+    });
   }
 
   // ── 存储浏览（S3 / R2 bucket 内对象列表） ─────────
