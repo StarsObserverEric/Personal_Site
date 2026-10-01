@@ -1,0 +1,17 @@
+# deps
+node_modules/
+
+# wrangler
+.wrangler/
+.dev.vars
+.env
+
+# build
+dist/
+
+# logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
