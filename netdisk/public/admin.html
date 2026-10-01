@@ -361,7 +361,16 @@ body {
 
 /* 缩略图模式 */
 .fm-thumbs { display: grid; gap: 12px; grid-template-columns: repeat(var(--ui-cols, 4), minmax(0, 1fr)); }
-.thumb { border-radius: 14px; overflow: hidden; background: var(--sf); border: 1px solid var(--stroke); }
+.thumb { border-radius: 14px; overflow: hidden; background: var(--sf); border: 1px solid var(--stroke); position: relative; }
+/* 缩略图卡片左上角的勾选框：默认半透明，勾选后高亮 —— 缩略图模式下也能多选 */
+.thumb-ck {
+  position: absolute; top: 6px; left: 6px; z-index: 2;
+  display: flex; align-items: center; justify-content: center;
+  padding: 3px 4px; border-radius: 8px;
+  background: rgba(0,0,0,.42); backdrop-filter: none;
+}
+.thumb-ck .fm-ck { margin: 0; }
+.thumb-ck:has(.fm-ck:checked) { background: rgba(10,132,255,.9); }
 .thumb .pv {
   width: 100%; aspect-ratio: 1 / 1; overflow: hidden;
   display: flex; align-items: center; justify-content: center; background: var(--track-bg);
@@ -380,6 +389,39 @@ body {
 }
 .fm-drop.over { background: var(--sf-strong); border-color: #0a84ff; color: var(--text); }
 .fm-host.over { outline: 2px dashed #0a84ff; outline-offset: 4px; border-radius: 14px; }
+
+/* 多选：行首复选框 + 顶部"已选 N 项"操作条 */
+.fm-sel {
+  display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 12px;
+  background: rgba(10,132,255,.12); border: 1px solid rgba(10,132,255,.35); font-size: 12.5px;
+}
+.fm-tbl th.ck, .fm-tbl td.ck { width: 34px; padding-left: 2px; padding-right: 0; }
+.fm-ck { width: 15px; height: 15px; accent-color: #0a84ff; cursor: pointer; vertical-align: middle; }
+
+/* ── 概览：容量卡片 + 两张饼图 ── */
+.cap-bar { height: 10px; border-radius: 6px; background: var(--track-bg); overflow: hidden; margin: 2px 0 16px; }
+.cap-bar i {
+  display: block; height: 100%; border-radius: 6px;
+  background: linear-gradient(90deg, #34d399, #0a84ff);
+  transition: width .45s cubic-bezier(.22,1,.36,1);
+}
+.cap-bar.warn i { background: linear-gradient(90deg, #fbbf24, #ff453a); }
+.cap-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; }
+.cap-box { min-width: 0; }
+.cap-box h3 {
+  font-size: 13px; font-weight: 650; color: var(--text-2);
+  margin-bottom: 10px; display: flex; align-items: center; gap: 6px;
+}
+.cap-pie { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.pie { flex: none; }
+.legend { flex: 1; min-width: 128px; display: flex; flex-direction: column; gap: 6px; }
+.lg-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.lg-row i { flex: none; width: 10px; height: 10px; border-radius: 3px; }
+.lg-row .lg-n {
+  flex: 1; min-width: 0; color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lg-row .lg-v { flex: none; color: var(--text-3); font-variant-numeric: tabular-nums; }
 
 /* ── 玻璃卡片 ─────────────────────────── */
 .glass {
@@ -815,6 +857,26 @@ const I18N = {
     colResolution: '分辨率', colModified: '修改时间', colDuration: '时长', colFps: '帧率',
     colVBitrate: '视频码率', colABitrate: '音频码率', colMetaNone: '—',
     newFolderOk: '已创建文件夹「{name}」', newFolderFail: '创建失败：{msg}',
+    // 回收站
+    tabTrash: '回收站',
+    trashTitle: '回收站', trashHint: '超过 30 天将自动彻底删除', emptyTrash: '清空回收站',
+    colOrigin: '原位置', colDeletedBy: '删除者', colDeletedAt: '删除时间', colDaysLeft: '剩余',
+    daysLeftN: '{n} 天', restore: '还原', purge: '彻底删除',
+    noTrash: '回收站是空的 —— 删除的文件会先放到这里，30 天内都可以还原',
+    confirmPurgeT: '彻底删除？', confirmPurgeD: '「{name}」将被永久删除，无法恢复。',
+    confirmEmptyTrashT: '清空回收站？', confirmEmptyTrashD: '回收站内所有文件将被永久删除，无法恢复。',
+    restoredN: '已还原 {n} 项', purgedN: '已彻底删除 {n} 项', trashedN: '已移入回收站 {n} 项',
+    // 容量卡片
+    capTitle: '容量', capUsedOf: '已用 {used} / {quota}', capFilesN: '在架文件 {n} 个',
+    capTrashN: '回收站 {size}（{n} 个）', noData: '暂无数据',
+    capByUser: '按用户', capByType: '按文件类型',
+    typeImage: '图片', typeVideo: '视频', typeAudio: '音频', typeDoc: '文档',
+    typeArchive: '压缩包', typeCode: '代码', typeOther: '其它',
+    // 多选 / 重命名 / 移动
+    selectAll: '全选', selectedN: '已选 {n} 项', clearSel: '取消选择',
+    rename: '重命名', moveTo: '移动到…', deletedN: '已删除 {n} 项', movedN: '已移动 {n} 项',
+    confirmDeleteNT: '删除所选项？', confirmDeleteND: '选中的 {n} 项将移入回收站，30 天内都可以还原。',
+    renameT: '重命名', renamePh: '新名称', moveT: '移动到目录', moveHint: '填目标目录的完整路径（根目录用 /）',
     // 分享弹窗
     shareModalTitle: '创建分享链接', shareModalSub: '生成公开下载链接，可设置有效期与下载次数上限',
     validity: '有效期', perm: '永久有效', h1: '1 小时', d1: '1 天', d7: '7 天', d30: '30 天',
@@ -1185,6 +1247,26 @@ const I18N = {
     colResolution: 'Resolution', colModified: 'Modified', colDuration: 'Duration', colFps: 'FPS',
     colVBitrate: 'V-bitrate', colABitrate: 'A-bitrate', colMetaNone: '—',
     newFolderOk: 'Folder "{name}" created', newFolderFail: 'Failed: {msg}',
+    // Trash
+    tabTrash: 'Trash',
+    trashTitle: 'Trash', trashHint: 'Deleted automatically after 30 days', emptyTrash: 'Empty trash',
+    colOrigin: 'Original path', colDeletedBy: 'Deleted by', colDeletedAt: 'Deleted at', colDaysLeft: 'Left',
+    daysLeftN: '{n} d', restore: 'Restore', purge: 'Delete forever',
+    noTrash: 'Trash is empty — deleted files land here and stay restorable for 30 days',
+    confirmPurgeT: 'Delete forever?', confirmPurgeD: '"{name}" will be permanently deleted. This cannot be undone.',
+    confirmEmptyTrashT: 'Empty the trash?', confirmEmptyTrashD: 'All files in the trash will be permanently deleted. This cannot be undone.',
+    restoredN: 'Restored {n} item(s)', purgedN: 'Permanently deleted {n} item(s)', trashedN: 'Moved {n} item(s) to trash',
+    // Capacity card
+    capTitle: 'Capacity', capUsedOf: '{used} / {quota} used', capFilesN: '{n} files stored',
+    capTrashN: 'Trash {size} ({n})', noData: 'No data',
+    capByUser: 'By user', capByType: 'By file type',
+    typeImage: 'Images', typeVideo: 'Videos', typeAudio: 'Audio', typeDoc: 'Documents',
+    typeArchive: 'Archives', typeCode: 'Code', typeOther: 'Other',
+    // Selection / rename / move
+    selectAll: 'Select all', selectedN: '{n} selected', clearSel: 'Clear',
+    rename: 'Rename', moveTo: 'Move…', deletedN: 'Deleted {n} item(s)', movedN: 'Moved {n} item(s)',
+    confirmDeleteNT: 'Delete selected?', confirmDeleteND: 'The {n} selected item(s) will be moved to the trash and stay restorable for 30 days.',
+    renameT: 'Rename', renamePh: 'New name', moveT: 'Move to folder', moveHint: 'Full path of the target folder (/ for root)',
     // 分享弹窗
     shareModalTitle: 'Create Share Link', shareModalSub: 'Generate a public download link with optional expiry and download cap',
     validity: 'Validity', perm: 'Forever', h1: '1 hour', d1: '1 day', d7: '7 days', d30: '30 days',
@@ -1761,6 +1843,7 @@ const NAV_GROUPS = [
   { key: 'overview', ic: '📊', label: () => t('tabOverview'), tab: 'overview' },
   { key: 'content', ic: '📦', label: () => t('navContent'), subs: [
       { tab: 'files',   label: () => t('tabFiles'),   ic: '📁' },
+      { tab: 'trash',   label: () => t('tabTrash'),   ic: '🗑️' },
       { tab: 'storage', label: () => t('tabStorage'), ic: '🗄️' },
       { tab: 'shares',  label: () => t('tabShares'),  ic: '🔗' },
       { tab: 'direct',  label: () => t('tabDirect'),  ic: '⚡' },
@@ -1930,7 +2013,7 @@ async function showApp(){
 
 /* Tab → loadXxx 函数映射 */
 const TAB_LOADERS = {
-  overview: loadOverview, files: loadFiles, storage: loadStorage, shares: loadShares,
+  overview: loadOverview, files: loadFiles, trash: loadTrash, storage: loadStorage, shares: loadShares,
   direct: loadDirectLinks, logs: loadLogs, bans: loadBans,
   global: loadGlobal, codes: loadCodes, security: loadSecurity, webdav: loadWebDAV, settings: loadSettings,
 };
@@ -1966,9 +2049,84 @@ function switchTab(tab){
     });
 }
 
+/* ═══════════ 容量卡片（概览）═══════════
+   饼图用内联 SVG 手画：项目本身零依赖，不值得为一个饼图引入图表库。
+   配色固定顺序 —— 否则同一分类在不同时间会换颜色，用户会以为数据变了。 */
+const PIE_COLORS = ['#0a84ff', '#34d399', '#fbbf24', '#f472b6', '#a78bfa', '#22d3ee', '#fb923c', '#94a3b8'];
+const TYPE_LABEL_KEY = {
+  image: 'typeImage', video: 'typeVideo', audio: 'typeAudio', doc: 'typeDoc',
+  archive: 'typeArchive', code: 'typeCode', other: 'typeOther',
+};
+
+/** 生成饼图。只有一个分类时画整圆（单点 path 画不出圆）。 */
+function pieSvg(items, size = 132){
+  const total = items.reduce((a, x) => a + x.bytes, 0);
+  if(total <= 0) return '';
+  const cx = size / 2, cy = size / 2, r = size / 2 - 1;
+  let a0 = -Math.PI / 2;                        // 从 12 点开始，顺时针
+  const paths = items.map((it, i) => {
+    const frac = it.bytes / total;
+    let d;
+    if(items.length === 1 || frac > 0.9999){
+      d = `M ${cx} ${cy} m -${r} 0 a ${r} ${r} 0 1 0 ${2 * r} 0 a ${r} ${r} 0 1 0 -${2 * r} 0`;
+    } else {
+      const a1 = a0 + frac * Math.PI * 2;
+      const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
+      const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+      const large = (a1 - a0) > Math.PI ? 1 : 0;
+      d = `M ${cx} ${cy} L ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)} Z`;
+      a0 = a1;
+    }
+    return `<path d="${d}" fill="${PIE_COLORS[i % PIE_COLORS.length]}"><title>${esc(it.label)}: ${fmtSize(it.bytes)}</title></path>`;
+  }).join('');
+  return `<svg class="pie" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" role="img">${paths}</svg>`;
+}
+
+function pieLegend(items){
+  const total = items.reduce((a, x) => a + x.bytes, 0) || 1;
+  return `<div class="legend">${items.map((it, i) => `
+    <div class="lg-row"><i style="background:${PIE_COLORS[i % PIE_COLORS.length]}"></i>
+      <span class="lg-n" title="${esc(it.label)}">${esc(it.label)}</span>
+      <span class="lg-v">${fmtSize(it.bytes)} · ${Math.round(it.bytes / total * 100)}%</span></div>`).join('')}</div>`;
+}
+
+function capSection(u){
+  const used = u.used_bytes || 0, quota = u.quota_bytes || 0;
+  const pct = quota > 0 ? Math.min(100, used / quota * 100) : 0;
+  const byUser = (u.by_owner || []).map(x => ({ label: x.key, bytes: x.bytes }));
+  const byType = (u.by_type || []).map(x => ({
+    label: TYPE_LABEL_KEY[x.key] ? t(TYPE_LABEL_KEY[x.key]) : x.key,
+    bytes: x.bytes,
+  }));
+  const box = (title, items) => `
+    <div class="cap-box"><h3>${title}</h3>
+      ${items.length ? `<div class="cap-pie">${pieSvg(items)}${pieLegend(items)}</div>`
+                     : `<div class="empty" style="padding:18px">${esc(t('noData'))}</div>`}
+    </div>`;
+  return `
+  <div class="glass section">
+    <div class="section-title">
+      <h2>💾 ${esc(t('capTitle'))}</h2>
+      <div style="font-size:12.5px;color:var(--text-3)">
+        ${esc(t('capUsedOf', { used: fmtSize(used), quota: fmtSize(quota) }))}
+        · ${esc(t('capFilesN', { n: u.file_count }))}${u.trash_count ? ' · ' + esc(t('capTrashN', { size: fmtSize(u.trash_bytes), n: u.trash_count })) : ''}
+      </div>
+    </div>
+    <div class="cap-bar ${pct >= 90 ? 'warn' : ''}"><i style="width:${pct.toFixed(2)}%"></i></div>
+    <div class="cap-grid">
+      ${box('👤 ' + esc(t('capByUser')), byUser)}
+      ${box('🗂️ ' + esc(t('capByType')), byType)}
+    </div>
+  </div>`;
+}
+
 /* ═══════════ 概览 ═══════════ */
 async function loadOverview(){
-  const s = await api('/api/admin/stats');
+  // 统计与容量并行取：容量卡片要的接口独立于 /stats，串行只会白等一个来回
+  const [s, usage] = await Promise.all([
+    api('/api/admin/stats'),
+    api('/api/admin/storage-usage').catch(() => null),
+  ]);
   const pill = $('#traffic-pill');
   if(pill){
     pill.classList.toggle('danger', s.traffic.quota_exceeded);
@@ -2010,6 +2168,7 @@ async function loadOverview(){
         <div class="foot">${esc(t('sharesFoot',{a:c.active_shares,b:c.banned}))}</div>
       </div>
     </div>
+    ${usage ? capSection(usage) : ''}
     <div class="glass section">
       <div class="section-title"><h2>📊 ${esc(t('chartTitle'))}</h2></div>
       <div class="chart">
@@ -2045,7 +2204,9 @@ async function loadOverview(){
 
 /* ═══════════ 文件管理器状态 ═══════════
    FM.data 直接就是 /api/admin/dirs 的返回（含 dirs / files / breadcrumb / writable）。 */
-const FM = { path: null, view: 'details', thumb: 150, data: null, start: null };
+const FM = { path: null, view: 'details', thumb: 150, data: null, start: null, sel: new Set() };
+/** 系统保留目录名（与服务端 vfs.ts 的常量保持一致） */
+const RECYCLE_DIR_NAME = 'Recycle_Bin';
 /** 缩略图尺寸滑杆的范围（HTML 与 JS 共用，改一处即可） */
 const THUMB_MIN = 80, THUMB_MAX = 320;
 
@@ -2087,6 +2248,120 @@ function fmtFps(v){
 const isImgFile = f => /^image\//.test(f.mime || '') || /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(f.name || '');
 const isVidFile = f => /^video\//.test(f.mime || '') || /\.(mp4|m4v|mov|webm|mkv|avi)$/i.test(f.name || '');
 
+/* ── 多选 / 重命名 / 移动 ──────────────────────────────
+   选中项用一个 Set 存，键带前缀：'f:<文件id>'、'd:<目录路径>' ——
+   这样一次框选里文件和目录可以混着来，批量操作时再分流。 */
+
+/** 进入某个路径。回收站是"派生视图"（服务端明确拒绝直接列它），交给回收站页签渲染。 */
+function goPath(p){
+  if(p === '/' + RECYCLE_DIR_NAME){ switchTab('trash'); return; }
+  loadFiles(p);
+}
+
+function selKeys(){ return [...FM.sel]; }
+function selFiles(){ return selKeys().filter(k => k.startsWith('f:')).map(k => k.slice(2)); }
+function selDirs(){ return selKeys().filter(k => k.startsWith('d:')).map(k => k.slice(2)); }
+
+function renderSelBar(){
+  const host = $('#fm-selbar');
+  if(!host) return;
+  const n = FM.sel.size;
+  if(!n){ host.innerHTML = ''; return; }
+  const files = selFiles().length;
+  host.innerHTML = `<div class="fm-sel">
+    <span>${esc(t('selectedN', { n }))}</span>
+    ${files ? `<button class="btn sm" id="sel-move">${esc(t('moveTo'))}</button>` : ''}
+    <button class="btn sm danger" id="sel-del">${esc(t('del'))}</button>
+    <button class="btn sm" id="sel-clear">${esc(t('clearSel'))}</button>
+  </div>`;
+  $('#sel-clear').onclick = () => { FM.sel.clear(); syncChecks(); renderSelBar(); };
+  $('#sel-del').onclick = batchDelete;
+  const mv = $('#sel-move'); if(mv) mv.onclick = batchMove;
+}
+
+/** 按 FM.sel 回写复选框（含表头"全选"的三态判断） */
+function syncChecks(){
+  $$('#fm-list .fm-ck').forEach(c => { c.checked = FM.sel.has(c.dataset.key); });
+  const boxes = $$('#fm-list .fm-ck').filter(c => !c.disabled);
+  const on = boxes.filter(c => c.checked).length;
+  $$('.fm-all').forEach(a => {
+    a.checked = boxes.length > 0 && on === boxes.length;
+    a.indeterminate = on > 0 && on < boxes.length;
+  });
+}
+
+async function batchDelete(){
+  const files = selFiles(), dirs = selDirs();
+  const total = files.length + dirs.length;
+  if(!total) return;
+  if(!(await confirmDialog(t('confirmDeleteNT'), t('confirmDeleteND', { n: total })))) return;
+  let n = 0;
+  if(files.length){
+    const r = await api('/api/admin/files/delete', { method:'POST', body: JSON.stringify({ ids: files }) });
+    n += r.trashed || 0;
+  }
+  for(const p of dirs){
+    const r = await api('/api/admin/dirs/delete', { method:'POST', body: JSON.stringify({ path: p }) });
+    n += r.trashed || 0;
+  }
+  toast(t('trashedN', { n }));
+  FM.sel.clear();
+  loadFiles(FM.path);
+}
+
+function batchMove(){
+  const ids = selFiles();
+  if(!ids.length) return;
+  openModal(`
+    <h3>${esc(t('moveT'))}</h3>
+    <div class="field">
+      <label>${esc(t('moveTo'))}</label>
+      <input type="text" id="mv-target" value="${esc(FM.path || '/')}" spellcheck="false" autocapitalize="off">
+      <div class="tip">${esc(t('moveHint'))}</div>
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">
+      <button class="btn" id="mv-cancel">${esc(t('cancel'))}</button>
+      <button class="btn primary" id="mv-ok">${esc(t('confirm'))}</button>
+    </div>`);
+  const inp = $('#mv-target'); if(inp) inp.focus();
+  $('#mv-cancel').onclick = closeModal;
+  $('#mv-ok').onclick = async () => {
+    const target = ($('#mv-target').value || '').trim() || '/';
+    try{
+      const r = await api('/api/admin/files/move', { method:'POST', body: JSON.stringify({ ids, target }) });
+      closeModal();
+      toast(t('movedN', { n: r.moved || 0 }));
+      FM.sel.clear();
+      loadFiles(FM.path);
+    }catch(e){ toast(e.message, 'err'); }
+  };
+}
+
+function renameDialog(kind, key, oldName){
+  openModal(`
+    <h3>${esc(t('renameT'))}</h3>
+    <div class="field">
+      <label>${esc(t('renameT'))}</label>
+      <input type="text" id="rn-name" value="${esc(oldName || '')}" spellcheck="false" autocapitalize="off">
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">
+      <button class="btn" id="rn-cancel">${esc(t('cancel'))}</button>
+      <button class="btn primary" id="rn-ok">${esc(t('confirm'))}</button>
+    </div>`);
+  const inp = $('#rn-name'); if(inp){ inp.focus(); inp.select(); }
+  $('#rn-cancel').onclick = closeModal;
+  $('#rn-ok').onclick = async () => {
+    const name = ($('#rn-name').value || '').trim();
+    if(!name) return;
+    try{
+      if(kind === 'dir') await api('/api/admin/dirs/rename', { method:'POST', body: JSON.stringify({ path: key, name }) });
+      else await api('/api/admin/files/rename', { method:'POST', body: JSON.stringify({ id: key, name }) });
+      closeModal();
+      loadFiles(FM.path);
+    }catch(e){ toast(e.message, 'err'); }
+  };
+}
+
 /* ═══════════ 列数控制（自动 + 手动）═══════════
    核心取舍：真正的列数**永远由可用宽度算出来**（auto），手动只调一个"偏置 bias"。
    于是两个需求同时成立 ——
@@ -2102,6 +2377,7 @@ const COL = { bias: 0, eff: 1, actual: 1 };
    bias 是**全局**的：在任意页面按 ± ，所有支持分列的页面都会一起变。 */
 const TAB_LAYOUT = {
   files:    { unit: 880 },   // 缩略图模式改用滑杆值，见 colUnit()
+  trash:    { unit: 900 },
   settings: { unit: 400 },
   storage:  { unit: 900 },
   shares:   { unit: 900 },
@@ -2440,6 +2716,7 @@ async function loadFiles(p){
   const q = target ? ('?path=' + encodeURIComponent(target)) : '';
   FM.data = await api('/api/admin/dirs' + q);
   FM.path = FM.data.path || '/';
+  FM.sel.clear();          // 换目录就清空选择（选择是"当前目录内"的概念）
   renderFM();
 }
 
@@ -2455,6 +2732,8 @@ function renderFM(){
     <div class="fm-bar">
       <div class="crumb">${crumbHtml}</div>
       <div style="flex:1"></div>
+      <div id="fm-selbar"></div>
+      <button class="btn sm" id="fm-selall">☑ ${esc(t('selectAll'))}</button>
       ${d.writable === false ? '' : `<button class="btn sm" id="fm-newdir">＋ ${esc(t('fmNewFolder'))}</button>`}
       <button class="btn sm primary" id="fm-upload">⬆ ${esc(t('fmUpload'))}</button>
       <div class="fm-seg">
@@ -2474,10 +2753,24 @@ function renderFM(){
   // ⚠️ 面包屑的点击必须**在这里**绑定，不能指望 renderFileList → bindRowActions：
   //    空目录时 renderFileList 会提前 return，于是面包屑从来没被绑上事件、
   //    表现为"进了子目录后点『根目录』没反应"（用户报的 bug）。
-  $$('[data-go]').forEach(a => a.onclick = e => { e.stopPropagation(); loadFiles(a.dataset.go); });
+  $$('[data-go]').forEach(a => a.onclick = e => {
+    if(e.target.closest('input, button')) return;   // 点复选框/操作按钮不该触发跳转
+    e.stopPropagation();
+    goPath(a.dataset.go);
+  });
   $('#fm-upload').onclick = () => fi.click();
   fi.onchange = () => { const l = [...fi.files]; fi.value = ''; if(l.length) uploadFiles(l); };
   const nd = $('#fm-newdir'); if(nd) nd.onclick = newFolderDialog;
+  // 全选 / 全不选（缩略图模式下没有表头复选框，这个按钮是唯一入口 ⇒ 两种模式都要有）
+  const selAll = $('#fm-selall');
+  if(selAll) selAll.onclick = () => {
+    const boxes = $$('#fm-list .fm-ck').filter(c => !c.disabled);
+    const allOn = boxes.length > 0 && boxes.every(c => c.checked);
+    FM.sel.clear();
+    if(!allOn) boxes.forEach(c => FM.sel.add(c.dataset.key));
+    syncChecks();
+    renderSelBar();
+  };
   $('#fm-v-details').onclick = () => { FM.view = 'details'; fmSavePrefs(); renderFM(); };
   $('#fm-v-thumbs').onclick  = () => { FM.view = 'thumbs';  fmSavePrefs(); renderFM(); };
   const th = $('#fm-thumb');
@@ -2506,6 +2799,7 @@ function renderFM(){
 
   syncCols();
   renderFileList();
+  renderSelBar();
 }
 
 /** 把条目按"列优先"均分到 n 列 —— 阅读顺序是自上而下、再进下一列，和报纸一致 */
@@ -2532,16 +2826,20 @@ function renderFileList(){
 
 function detailsRow(it){
   if(it.isDir){
-    const ro = it.system || it.virtual;
+    const ro = it.system || it.virtual;      // 系统目录/虚拟目录：不能删、不能改名
     return `<tr class="fm-dir" data-go="${esc(it.path)}">
-      <td><div class="nm"><span>📁</span><span class="tx">${esc(it.name)}</span></div></td>
+      <td class="ck">${ro ? '' : `<input type="checkbox" class="fm-ck" data-key="d:${esc(it.path)}" title="${esc(t('selectAll'))}">`}</td>
+      <td><div class="nm"><span>${it.virtual ? '🗑️' : '📁'}</span><span class="tx" title="${esc(it.name)}">${esc(it.name)}</span></div></td>
       <td class="num">${DASH}</td><td class="num">${DASH}</td><td class="num">${DASH}</td>
       <td class="num">${DASH}</td><td class="num">${DASH}</td><td class="num">${DASH}</td><td class="num">${DASH}</td>
-      <td><div class="fm-act">${ro ? '' : `<button class="dg" data-rmdir="${esc(it.path)}" title="${esc(t('del'))}">🗑</button>`}</div></td>
+      <td><div class="fm-act">${ro ? '' : `
+        <button data-rename-dir="${esc(it.path)}" data-name="${esc(it.name)}" title="${esc(t('rename'))}">✏️</button>
+        <button class="dg" data-rmdir="${esc(it.path)}" title="${esc(t('del'))}">🗑</button>`}</div></td>
     </tr>`;
   }
   const f = it, vid = isVidFile(f);
   return `<tr>
+    <td class="ck"><input type="checkbox" class="fm-ck" data-key="f:${esc(f.id)}" title="${esc(t('selectAll'))}"></td>
     <td><div class="nm">${ficon(f.name)}<span class="tx" title="${esc(f.name)}">${esc(f.name)}</span></div></td>
     <td class="num">${fmtSize(f.size)}</td>
     <td class="num">${fmtTime(f.mtime || f.uploaded_at)}</td>
@@ -2551,6 +2849,7 @@ function detailsRow(it){
     <td class="num">${vid ? fmtRate(f.v_bitrate) : DASH}</td>
     <td class="num">${vid ? fmtRate(f.a_bitrate) : DASH}</td>
     <td><div class="fm-act">
+      <button data-rename="${esc(f.id)}" data-name="${esc(f.name)}" title="${esc(t('rename'))}">✏️</button>
       <button data-share="${f.id}" title="${esc(t('createShare'))}">🔗</button>
       <button data-del="${f.id}" data-name="${esc(f.name)}" class="dg" title="${esc(t('del'))}">🗑</button>
     </div></td>
@@ -2563,7 +2862,8 @@ function detailsHtml(items){
   // 每个表头都带 title：万一列被压窄，鼠标悬停还能看到完整列名。
   const th = (w, key) => `<th style="width:${w}" title="${esc(t(key))}">${esc(t(key))}</th>`;
   const head = `<tr>
-      <th style="width:30%" title="${esc(t('colName'))}">${esc(t('colName'))}</th>
+      <th class="ck"><input type="checkbox" class="fm-all" title="${esc(t('selectAll'))}"></th>
+      <th style="width:28%" title="${esc(t('colName'))}">${esc(t('colName'))}</th>
       ${th('66px','colSize')}
       ${th('116px','colModified')}
       ${th('100px','colResolution')}
@@ -2581,19 +2881,25 @@ function detailsHtml(items){
 }
 
 function thumbsHtml(items){
+  /** 卡片左上角的勾选框。系统目录不给勾（与详细信息模式一致） */
+  const ck = (key, ro) => `<label class="thumb-ck" title="${esc(t('selectAll'))}">
+    <input type="checkbox" class="fm-ck" data-key="${esc(key)}" ${ro ? 'disabled' : ''}></label>`;
   return `<div class="fm-thumbs">${items.map(it => {
     if(it.isDir){
+      const ro = it.system || it.virtual;
       return `<div class="thumb" data-go="${esc(it.path)}" title="${esc(it.name)}">
-        <div class="pv"><span class="ph">📁</span></div>
+        ${ro ? '' : ck('d:' + it.path, false)}
+        <div class="pv"><span class="ph">${it.virtual ? '🗑️' : '📁'}</span></div>
         <div class="mt"><div class="n">${esc(it.name)}</div><div class="s">${esc(t('fmFolderCount'))}</div></div>
       </div>`;
     }
     const img = isImgFile(it), vid = isVidFile(it);
     const pv = img
       ? `<img loading="lazy" decoding="async" src="/api/admin/files/${encodeURIComponent(it.id)}/raw" alt="">`
-      : `<span class="ph">${vid ? '🎬' : esc((extOf(it.name) || '?').toUpperCase().slice(0,4))}</span>`;
+      : `<span class="ph">${vid ? '🎬' : esc((extOf(it.name) || '?').toUpperCase().slice(0, 4))}</span>`;
     const extra = vid ? fmtDur(it.duration_ms) : (it.width ? `${it.width}×${it.height}` : '');
     return `<div class="thumb" title="${esc(it.name)}">
+      ${ck('f:' + it.id, false)}
       <div class="pv">${pv}</div>
       <div class="mt">
         <div class="n">${esc(it.name)}</div>
@@ -2604,7 +2910,35 @@ function thumbsHtml(items){
 }
 
 function bindRowActions(){
-  $$('[data-go]').forEach(el => el.onclick = e => { e.stopPropagation(); loadFiles(el.dataset.go); });
+  $$('[data-go]').forEach(el => el.onclick = e => {
+    if(e.target.closest('input, button')) return;   // 复选框/操作按钮上的点击不进入目录
+    e.stopPropagation();
+    goPath(el.dataset.go);
+  });
+
+  // ── 多选 ──
+  $$('#fm-list .fm-ck').forEach(c => c.onchange = () => {
+    if(c.checked) FM.sel.add(c.dataset.key); else FM.sel.delete(c.dataset.key);
+    syncChecks();
+    renderSelBar();
+  });
+  $$('.fm-all').forEach(a => a.onchange = () => {
+    FM.sel.clear();
+    if(a.checked) $$('#fm-list .fm-ck').forEach(c => { if(!c.disabled) FM.sel.add(c.dataset.key); });
+    syncChecks();
+    renderSelBar();
+  });
+
+  // ── 重命名 ──
+  $$('[data-rename]').forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    renameDialog('file', b.dataset.rename, b.dataset.name);
+  });
+  $$('[data-rename-dir]').forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    renameDialog('dir', b.dataset.renameDir, b.dataset.name);
+  });
+
   $$('[data-del]').forEach(b => b.onclick = async e => {
     e.stopPropagation();
     if(!(await confirmDialog(t('deleteFileT'), t('deleteFileD', { name: b.dataset.name })))) return;
@@ -2697,6 +3031,66 @@ async function uploadFiles(files){
     };
     xhr.send(file);
   }
+}
+
+/* ═══════════ 回收站 ═══════════
+   服务端只对**文件**做软删除（见 src/filestore.ts 的模型说明）：
+   删目录 = 递归软删其下所有文件 + 移除目录结构行，所以这里列出来的都是文件。
+   可见性由服务端按身份过滤：管理员看全部，普通用户只看自己删的。 */
+async function loadTrash(){
+  const d = await api('/api/admin/trash');
+  const items = d.items || [];
+  $('#view').innerHTML = `
+  <div class="glass section">
+    <div class="section-title">
+      <h2>🗑️ ${esc(t('trashTitle'))}（${items.length}）</h2>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:12.5px;color:var(--text-3)">${esc(t('trashHint'))}</span>
+        ${items.length ? `<button class="btn sm danger" id="trash-empty">${esc(t('emptyTrash'))}</button>` : ''}
+      </div>
+    </div>
+    ${items.length ? `
+    <div style="overflow-x:auto"><table class="tbl">
+      <thead><tr>
+        <th>${esc(t('colName'))}</th><th>${esc(t('colOrigin'))}</th><th>${esc(t('colSize'))}</th>
+        <th>${esc(t('colDeletedBy'))}</th><th>${esc(t('colDeletedAt'))}</th><th>${esc(t('colDaysLeft'))}</th>
+        <th style="width:150px">${esc(t('colActions'))}</th>
+      </tr></thead>
+      <tbody>${items.map(it => `
+        <tr>
+          <td class="name-cell" title="${esc(it.name)}">${ficon(it.name)} ${esc(it.name)}</td>
+          <td class="mono">${esc(it.original_path || '/')}</td>
+          <td class="num">${fmtSize(it.size)}</td>
+          <td>${esc(it.deleted_by || '—')}</td>
+          <td class="num">${fmtTime(it.deleted_at)}</td>
+          <td class="num">${it.days_left != null ? esc(t('daysLeftN', { n: it.days_left })) : '—'}</td>
+          <td><div class="actions-cell">
+            <button class="btn sm" data-restore="${it.id}">${esc(t('restore'))}</button>
+            <button class="btn sm danger" data-purge="${it.id}" data-name="${esc(it.name)}">${esc(t('purge'))}</button>
+          </div></td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>` : `<div class="empty"><div class="icon">🗑️</div>${esc(t('noTrash'))}</div>`}
+  </div>`;
+
+  const emptyBtn = $('#trash-empty');
+  if(emptyBtn) emptyBtn.onclick = async () => {
+    if(!(await confirmDialog(t('confirmEmptyTrashT'), t('confirmEmptyTrashD')))) return;
+    const r = await api('/api/admin/trash?all=1', { method:'DELETE' });
+    toast(t('purgedN', { n: r.purged || 0 }));
+    loadTrash();
+  };
+  $$('[data-restore]').forEach(b => b.onclick = async () => {
+    const r = await api('/api/admin/trash/restore', { method:'POST', body: JSON.stringify({ ids: [b.dataset.restore] }) });
+    toast(t('restoredN', { n: r.restored || 0 }));
+    loadTrash();
+  });
+  $$('[data-purge]').forEach(b => b.onclick = async () => {
+    if(!(await confirmDialog(t('confirmPurgeT'), t('confirmPurgeD', { name: b.dataset.name })))) return;
+    const r = await api('/api/admin/trash', { method: 'DELETE', body: JSON.stringify({ ids: [b.dataset.purge] }) });
+    toast(t('purgedN', { n: r.purged || 0 }));
+    loadTrash();
+  });
 }
 
 /* ═══════════ 创建分享弹窗 ═══════════ */
