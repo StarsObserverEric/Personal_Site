@@ -271,15 +271,22 @@ body {
 .sb-toggle:hover { background: var(--sf-strong); }
 .sb-toggle:active { transform: scale(.94); }
 
-/* ── 宽屏自动分列 ───────────────────────
-   用法：容器加 class="auto-cols"，用 --col-min 指定单列最小宽度。
-   浏览器按可用宽度自动决定列数 —— 1080p 约 2 列；4K(3840px) 可到 6-8 列。
-   单列不会被无限拉长，超出上限就自动新开一列。 */
+/* ── 宽屏自动分列（瀑布流）──────────────
+   用法：容器加 class="auto-cols"，用 --col-min 指定单列目标宽度。
+   浏览器按可用宽度自动决定列数：1080p 的 #view（约 850px）→ 2 列；
+   4K（约 3700px）→ 8 列左右。卡片自上而下填入一列，新内容自动在下方续排。
+
+   注意：这是 CSS **多列（column flow）**，阅读顺序是"先填满一列再开下一列"，
+   适合彼此独立的卡片（设置项、统计块）。对要求严格横向阅读顺序的表格/文件列表
+   不适用 —— 那种要用 grid，留给文件管理器重构。 */
 .auto-cols {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--col-min, 420px), 1fr));
-  gap: 14px;
-  align-content: start;
+  columns: var(--col-min, 400px);
+  column-gap: 14px;
+}
+.auto-cols > * {
+  break-inside: avoid;
+  -webkit-column-break-inside: avoid;
+  margin-bottom: 14px;
 }
 
 /* ── 玻璃卡片 ─────────────────────────── */
@@ -1635,11 +1642,11 @@ const NAV_GROUPS = [
       { tab: 'logs',   label: () => t('tabLogs'),   ic: '📋' },
       { tab: 'global', label: () => t('tabGlobal'), ic: '🌍' },
     ]},
-  { key: 'security', ic: '🛡️', label: () => t('navSecurity'), subs: [
+  { key: 'security', ic: '🛡️', label: () => t('navSecurity'), adminOnly: true, subs: [
       { tab: 'bans',    label: () => t('tabBans'),    ic: '🚫' },
       { tab: 'security',label: () => t('tabSecurity'),ic: '🔒' },
     ]},
-  { key: 'system', ic: '⚙️', label: () => t('navSystem'), subs: [
+  { key: 'system', ic: '⚙️', label: () => t('navSystem'), adminOnly: true, subs: [
       { tab: 'codes',    label: () => t('tabCodes'),    ic: '🎟️' },
       { tab: 'webdav',   label: () => t('tabWebDAV'),  ic: '🗂️' },
       { tab: 'settings', label: () => t('tabSettings'), ic: '⚙️' },
@@ -1655,12 +1662,20 @@ NAV_GROUPS.forEach(g => {
 let currentTab = 'overview';
 let openGroup = 'overview'; // 当前展开的侧边栏分组
 let logsPage = 1, logsQuery = '';
+// ── 权限骨架 ── 由 /api/admin/session 填充。
+// 普通用户（role=user）看不到"安全中心"与"系统设置"两个分组。
+// 注意：前端隐藏只是体验层，真正的边界必须在服务端 —— 见 src/vfs.ts 的 *ScopeOf/can*Path。
+let IS_ADMIN = true;
+let ME_NAME = 'admin';
 
 async function showApp(){
   loginStage = 'password'; savedLoginKey = '';
   try{
     const s = await api('/api/admin/session');
     siteTitle = s.site_title || siteTitle;
+    // 权限骨架：后端未返回 is_admin 时（旧版本）一律按管理员处理，避免把人锁住
+    IS_ADMIN = s.is_admin !== false;
+    ME_NAME = s.user || 'admin';
     // 隐藏路由：访问 /admin/apple 强制 Apple 玻璃风格（暗色紫蓝渐变）
     const path = location.pathname;
     if (/\/admin\/apple(\/|$)/.test(path)) {
@@ -1675,8 +1690,8 @@ async function showApp(){
   }
   document.title = t('docTitle', {site: siteTitle});
 
-  // 渲染侧边栏
-  const sidebarHtml = NAV_GROUPS.map(g => {
+  // 渲染侧边栏（普通用户过滤掉 adminOnly 分组）
+  const sidebarHtml = NAV_GROUPS.filter(g => !g.adminOnly || IS_ADMIN).map(g => {
     const isSingle = !g.subs;
     const active = (isSingle && currentTab === g.tab) || TAB_TO_GROUP[currentTab] === g.key;
     const subHtml = g.subs ? `
@@ -1738,6 +1753,12 @@ async function showApp(){
       const gKey = main.dataset.group;
       const tab = main.dataset.tab;
       if (tab) {
+        // 普通用户不得进入仅管理员可见的分组（前端第一道；服务端为准）
+        const grp = NAV_GROUPS.find(g => g.key === TAB_TO_GROUP[tab]);
+        if (grp && grp.adminOnly && !IS_ADMIN) {
+          toast(LANG === 'zh' ? '无权限访问该分组' : 'No permission for this section', 'err');
+          return;
+        }
         // 叶子节点（如 overview）：直接切换
         switchTab(tab);
       } else {
@@ -3162,6 +3183,7 @@ async function loadSettings(){
     api('/api/admin/db/status').catch(() => null),
   ]);
   $('#view').innerHTML = `
+    <div class="auto-cols">
     <div class="glass group">
       <div class="row">
         <div class="info"><div class="t">${esc(t('siteName'))}</div><div class="d">${esc(t('siteNameD'))}</div></div>
@@ -3407,6 +3429,7 @@ async function loadSettings(){
         <button class="btn sm ${dbStatus && dbStatus.healthy ? '' : 'primary'}" id="db-repair">${esc(t('dbRepairBtn'))}</button>
       </div>
     </div>
+    </div><!-- /auto-cols（设置卡片自动分列，保存按钮留在列外、独占整行）-->
     <button class="btn primary" id="st-save" style="padding:14px 28px;font-size:15px;border-radius:18px">${esc(t('save'))}</button>`;
 
   // ── 数据库工具按钮 ──
@@ -3753,6 +3776,32 @@ async function loadSettings(){
       } catch(err){ toast(err.message, 'err'); }
     });
   }
+
+  // ═══ OAuth2 总开关：必须"拨动即保存" ═══
+  // 原来这个 checkbox 没有绑定任何事件，只有点页面底部「保存设置」才会被读到并提交。
+  // 用户拨开关 → 没进库 → 刷新页面 → 自己弹回去，看起来像 bug。
+  // 这里改成即时 PUT，并在失败时**回滚 UI**（否则会出现"看着是开的、其实没开"的假象）。
+  $('#oauth-enabled')?.addEventListener('change', async (e) => {
+    const tgl = e.currentTarget;
+    const want = tgl.checked;
+    tgl.disabled = true;
+    try {
+      await api('/api/admin/settings', { method:'PUT', body: JSON.stringify({ oauth_enabled: want }) });
+      const enabledN = document.querySelectorAll('#oauth-providers-grid .tag.active').length;
+      if (want && !enabledN) {
+        // 开关开了但一个 Provider 都没启用 —— 登录页仍然不会出现按钮，必须明确提示
+        toast(t('oauthNoEnabled'), 'err');
+      } else {
+        toast(want ? t('oauthEnabledN', { n: enabledN }) : t('oauthDisabled'));
+      }
+      loadSettings();   // 用服务端的真实值重绘，开关与状态行保持一致
+    } catch (err) {
+      tgl.checked = !want;   // 保存失败 → 回滚，绝不让 UI 与真实状态不一致
+      toast(String(err.message || err), 'err');
+    } finally {
+      tgl.disabled = false;
+    }
+  });
 
   // 添加 Provider
   $('#oauth-add')?.addEventListener('click', () => openOauthProviderModal(null));
