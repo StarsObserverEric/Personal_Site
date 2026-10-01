@@ -877,6 +877,8 @@ const I18N = {
     rename: '重命名', moveTo: '移动到…', deletedN: '已删除 {n} 项', movedN: '已移动 {n} 项',
     confirmDeleteNT: '删除所选项？', confirmDeleteND: '选中的 {n} 项将移入回收站，30 天内都可以还原。',
     renameT: '重命名', renamePh: '新名称', moveT: '移动到目录', moveHint: '填目标目录的完整路径（根目录用 /）',
+    moveNoTarget: '没有可选的目录（你只能移动到自己的文件夹里，而当前没有其它子文件夹）',
+    moveCount: '共 {n} 项',
     // 分享弹窗
     shareModalTitle: '创建分享链接', shareModalSub: '生成公开下载链接，可设置有效期与下载次数上限',
     validity: '有效期', perm: '永久有效', h1: '1 小时', d1: '1 天', d7: '7 天', d30: '30 天',
@@ -1267,6 +1269,8 @@ const I18N = {
     rename: 'Rename', moveTo: 'Move…', deletedN: 'Deleted {n} item(s)', movedN: 'Moved {n} item(s)',
     confirmDeleteNT: 'Delete selected?', confirmDeleteND: 'The {n} selected item(s) will be moved to the trash and stay restorable for 30 days.',
     renameT: 'Rename', renamePh: 'New name', moveT: 'Move to folder', moveHint: 'Full path of the target folder (/ for root)',
+    moveNoTarget: 'No destination available (you can only move within your own folder, and it has no other subfolder yet)',
+    moveCount: '{n} item(s)',
     // 分享弹窗
     shareModalTitle: 'Create Share Link', shareModalSub: 'Generate a public download link with optional expiry and download cap',
     validity: 'Validity', perm: 'Forever', h1: '1 hour', d1: '1 day', d7: '7 days', d30: '30 days',
@@ -2267,16 +2271,15 @@ function renderSelBar(){
   if(!host) return;
   const n = FM.sel.size;
   if(!n){ host.innerHTML = ''; return; }
-  const files = selFiles().length;
   host.innerHTML = `<div class="fm-sel">
     <span>${esc(t('selectedN', { n }))}</span>
-    ${files ? `<button class="btn sm" id="sel-move">${esc(t('moveTo'))}</button>` : ''}
+    <button class="btn sm" id="sel-move">${esc(t('moveTo'))}</button>
     <button class="btn sm danger" id="sel-del">${esc(t('del'))}</button>
     <button class="btn sm" id="sel-clear">${esc(t('clearSel'))}</button>
   </div>`;
   $('#sel-clear').onclick = () => { FM.sel.clear(); syncChecks(); renderSelBar(); };
   $('#sel-del').onclick = batchDelete;
-  const mv = $('#sel-move'); if(mv) mv.onclick = batchMove;
+  $('#sel-move').onclick = () => moveDialog(selFiles(), selDirs());
 }
 
 /** 按 FM.sel 回写复选框（含表头"全选"的三态判断） */
@@ -2309,26 +2312,44 @@ async function batchDelete(){
   loadFiles(FM.path);
 }
 
-function batchMove(){
-  const ids = selFiles();
-  if(!ids.length) return;
+/* ── 移动到… ────────────────────────────────────────
+   选择器而不是手打路径：目标清单由服务端按**当前身份**筛过（/api/admin/dirs/writable），
+   所以普通用户的下拉里只有自己的文件夹、管理员才看得到别人的文件夹 ——
+   权限判断只在服务端做一份，前端只是把结果渲染出来。
+   移动目录时把"它自己和它的子孙"从候选里去掉：移进自己的子树会把这棵子树从树上摘掉。 */
+async function moveDialog(fileIds, dirPaths){
+  let paths = [];
+  try{
+    const r = await api('/api/admin/dirs/writable');
+    paths = r.paths || [];
+  }catch(e){ toast(e.message, 'err'); return; }
+
+  const banned = dirPaths.map(p => p + '/');
+  const options = paths.filter(p => p !== FM.path && !dirPaths.includes(p) && !banned.some(b => p.startsWith(b)));
+  // 当前目录不一定在清单里（例如停在自己的父目录），补进去，方便"原地不动"时也能看到上下文
+  const list = FM.path && FM.path !== '/' && !options.includes(FM.path) ? [FM.path, ...options] : options;
+
   openModal(`
     <h3>${esc(t('moveT'))}</h3>
     <div class="field">
       <label>${esc(t('moveTo'))}</label>
-      <input type="text" id="mv-target" value="${esc(FM.path || '/')}" spellcheck="false" autocapitalize="off">
-      <div class="tip">${esc(t('moveHint'))}</div>
+      ${list.length
+        ? `<select id="mv-target">${list.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('')}</select>`
+        : `<div class="tip">${esc(t('moveNoTarget'))}</div>`}
     </div>
+    <div class="tip">${esc(t('moveCount', { n: fileIds.length + dirPaths.length }))}</div>
     <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">
       <button class="btn" id="mv-cancel">${esc(t('cancel'))}</button>
-      <button class="btn primary" id="mv-ok">${esc(t('confirm'))}</button>
+      <button class="btn primary" id="mv-ok" ${list.length ? '' : 'disabled'}>${esc(t('confirm'))}</button>
     </div>`);
-  const inp = $('#mv-target'); if(inp) inp.focus();
   $('#mv-cancel').onclick = closeModal;
   $('#mv-ok').onclick = async () => {
-    const target = ($('#mv-target').value || '').trim() || '/';
+    const sel = $('#mv-target'); if(!sel) return;
     try{
-      const r = await api('/api/admin/files/move', { method:'POST', body: JSON.stringify({ ids, target }) });
+      const r = await api('/api/admin/move', {
+        method:'POST',
+        body: JSON.stringify({ ids: fileIds, dirs: dirPaths, target: sel.value })
+      });
       closeModal();
       toast(t('movedN', { n: r.moved || 0 }));
       FM.sel.clear();
@@ -2833,6 +2854,7 @@ function detailsRow(it){
       <td class="num">${DASH}</td><td class="num">${DASH}</td><td class="num">${DASH}</td>
       <td class="num">${DASH}</td><td class="num">${DASH}</td><td class="num">${DASH}</td><td class="num">${DASH}</td>
       <td><div class="fm-act">${ro ? '' : `
+        <button data-move-dir="${esc(it.path)}" data-name="${esc(it.name)}" title="${esc(t('moveTo'))}">📂</button>
         <button data-rename-dir="${esc(it.path)}" data-name="${esc(it.name)}" title="${esc(t('rename'))}">✏️</button>
         <button class="dg" data-rmdir="${esc(it.path)}" title="${esc(t('del'))}">🗑</button>`}</div></td>
     </tr>`;
@@ -2849,6 +2871,7 @@ function detailsRow(it){
     <td class="num">${vid ? fmtRate(f.v_bitrate) : DASH}</td>
     <td class="num">${vid ? fmtRate(f.a_bitrate) : DASH}</td>
     <td><div class="fm-act">
+      <button data-move="${esc(f.id)}" data-name="${esc(f.name)}" title="${esc(t('moveTo'))}">📂</button>
       <button data-rename="${esc(f.id)}" data-name="${esc(f.name)}" title="${esc(t('rename'))}">✏️</button>
       <button data-share="${f.id}" title="${esc(t('createShare'))}">🔗</button>
       <button data-del="${f.id}" data-name="${esc(f.name)}" class="dg" title="${esc(t('del'))}">🗑</button>
@@ -2871,7 +2894,7 @@ function detailsHtml(items){
       ${th('52px','colFps')}
       ${th('94px','colVBitrate')}
       ${th('94px','colABitrate')}
-      ${th('72px','colActions')}
+      ${th('108px','colActions')}
     </tr>`;
   return `<div class="fmc">${splitColumns(items, n).map(col => `
     <div class="fcol"><table class="fm-tbl">
@@ -2927,6 +2950,16 @@ function bindRowActions(){
     if(a.checked) $$('#fm-list .fm-ck').forEach(c => { if(!c.disabled) FM.sel.add(c.dataset.key); });
     syncChecks();
     renderSelBar();
+  });
+
+  // ── 移动（行内按钮：文件和目录都支持）──
+  $$('[data-move]').forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    moveDialog([b.dataset.move], []);
+  });
+  $$('[data-move-dir]').forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    moveDialog([], [b.dataset.moveDir]);
   });
 
   // ── 重命名 ──
