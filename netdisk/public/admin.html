@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>cloud-r2pan</title>
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="https://starsobservereric.cc.cd/apple-touch-icon.png">
 <style>
 /* ═══════════════════════════════════════════════════════════
    默认主题：简洁暗色（无玻璃模糊）
@@ -248,11 +250,37 @@ body {
 .o3 { width: 30vmax; height: 30vmax; background: var(--orb-3); top: 48%; left: 12%; animation-delay: -15s; opacity: var(--orb-opacity); }
 @keyframes drift { from { transform: translate(0,0) scale(1); } to { transform: translate(5vw,-6vh) scale(1.15); } }
 
-/* ── 布局 ─────────────────────────────── */
+/* ── 布局（横向拉满）───────────────────── */
 #app { position: relative; z-index: 1; }
-.wrap { max-width: 1280px; margin: 0 auto; padding: 20px clamp(14px, 3vw, 28px) 60px; }
-.layout { display: flex; gap: 20px; align-items: flex-start; }
+/* 取消原来的 max-width:1280px —— 默认铺满整个视口宽度。
+   只留左右内边距，且用 clamp 控制上限，避免超宽屏时元素贴边。 */
+.wrap { max-width: none; width: 100%; margin: 0; padding: 14px clamp(12px, 1.4vw, 40px) 60px; }
+.layout { display: flex; gap: 18px; align-items: flex-start; }
 .layout #view { flex: 1; min-width: 0; }
+
+/* ── 侧边栏折叠（顶栏左端按钮切换）────── */
+#app.sb-collapsed .sidebar { display: none; }
+#app.sb-collapsed .layout { gap: 0; }
+.sb-toggle {
+  flex: none; width: 38px; height: 38px; padding: 0; border-radius: 12px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--sf); border: 1px solid var(--stroke); color: var(--text);
+  font-size: 15px; line-height: 1; font-family: inherit;
+  transition: background .18s, transform .15s;
+}
+.sb-toggle:hover { background: var(--sf-strong); }
+.sb-toggle:active { transform: scale(.94); }
+
+/* ── 宽屏自动分列 ───────────────────────
+   用法：容器加 class="auto-cols"，用 --col-min 指定单列最小宽度。
+   浏览器按可用宽度自动决定列数 —— 1080p 约 2 列；4K(3840px) 可到 6-8 列。
+   单列不会被无限拉长，超出上限就自动新开一列。 */
+.auto-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--col-min, 420px), 1fr));
+  gap: 14px;
+  align-content: start;
+}
 
 /* ── 玻璃卡片 ─────────────────────────── */
 .glass {
@@ -271,8 +299,10 @@ body {
 
 /* ── 顶栏 ─────────────────────────────── */
 .topbar {
-  position: sticky; top: 12px; z-index: 50; margin-bottom: 22px;
-  display: flex; align-items: center; gap: 12px; padding: 12px 18px;
+  /* 常驻顶部：top:0 贴住视口上沿，滚动不隐藏；nowrap 保证各项不换行、不被截断 */
+  position: sticky; top: 0; z-index: 60; margin-bottom: 18px;
+  display: flex; align-items: center; gap: 10px; padding: 11px 16px;
+  flex-wrap: nowrap; white-space: nowrap;
   background: var(--glass-strong);
   backdrop-filter: none; -webkit-backdrop-filter: none;
   border: 1px solid var(--stroke); border-radius: 22px;
@@ -1667,6 +1697,7 @@ async function showApp(){
   $('#app').innerHTML = `
   <div class="wrap">
     <div class="topbar">
+      <button class="sb-toggle" id="sb-toggle" title="展开 / 收起左侧菜单" aria-label="展开 / 收起左侧菜单">☰</button>
       <div class="logo"><svg viewBox="0 0 24 24" fill="none"><path d="M12 2L21 8.5V15.5L12 22L3 15.5V8.5L12 2Z" stroke="#fff" stroke-width="1.8" stroke-linejoin="round" fill="rgba(255,255,255,.14)"/><path d="M12 2V22M3 8.5L12 15L21 8.5M3 15.5L12 9L21 15.5" stroke="#fff" stroke-width="1.2" opacity=".65"/></svg></div>
       <div><h1>${esc(siteTitle)}</h1><div class="sub">${esc(t('topbarSub'))}</div></div>
       <div class="spacer"></div>
@@ -1683,6 +1714,22 @@ async function showApp(){
       <div id="view"></div>
     </div>
   </div>`;
+
+  // 侧边栏折叠开关：状态写进 localStorage，刷新/重进后保持。
+  // ⚠️ localStorage 必须整个包在 try/catch 里：Safari 隐私模式、存储被策略禁用、
+  //    以及 file:// 源下访问它都会抛 SecurityError。一旦这里抛出且没兜住，
+  //    异常会冒泡到启动逻辑的 catch，进而把整个后台换成登录页 —— 页面看起来"登录不了"。
+  {
+    const appEl = $('#app');
+    let saved = '0';
+    try { saved = localStorage.getItem('sbCollapsed') || '0'; } catch (e) { /* 存储不可用，忽略 */ }
+    if (saved === '1') appEl.classList.add('sb-collapsed');
+    $('#sb-toggle').onclick = () => {
+      appEl.classList.toggle('sb-collapsed');
+      const next = appEl.classList.contains('sb-collapsed') ? '1' : '0';
+      try { localStorage.setItem('sbCollapsed', next); } catch (e) { /* 存不下也不影响本次折叠 */ }
+    };
+  }
 
   // 绑定侧边栏事件
   $('#sidebar').addEventListener('click', e => {
