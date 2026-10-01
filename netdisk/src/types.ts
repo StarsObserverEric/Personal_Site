@@ -14,6 +14,13 @@ export interface Env {
    * 没绑定时全球分布 Tab 会降级使用 D1 的 download_logs（只存 country，无经纬度）。
    */
   analytics?: AnalyticsEngineDataset;
+
+  /** 可选：管理员登录用户名。设置后登录需「用户名 + 密码」双字段；未设置则只校验密码（向后兼容）。 */
+  admin_username?: string;
+  /** 可选：OAuth 允许登录的账号白名单（逗号/空格分隔）。未设置 = 拒绝所有 OAuth 登录（fail closed）。 */
+  oauth_allowed_users?: string;
+  /** 可选：设为 "true" 时，把 /s/*、/d/*、/market 放行给未登录访客；默认全部需要登录。 */
+  allow_public_share?: string;
 }
 
 export interface ShareRow {
