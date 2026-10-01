@@ -99,6 +99,18 @@ export interface FileEntry {
   path: string;
   owner: string;
   uploaded_at: number;
+  /** 文件的真实修改时间（浏览器 File.lastModified），老数据可能为 NULL */
+  mtime?: number | null;
+  /** 媒体元数据：图片/视频的像素宽高 */
+  width?: number | null;
+  height?: number | null;
+  /** 视频时长（毫秒） */
+  duration_ms?: number | null;
+  /** 视频帧率 */
+  fps?: number | null;
+  /** 视频轨码率 / 音频轨码率（bit/s） */
+  v_bitrate?: number | null;
+  a_bitrate?: number | null;
   share_count?: number;
   download_count?: number;
 }
@@ -170,6 +182,7 @@ export async function listDir(env: Env, me: Principal, dirInput: string): Promis
   const filesRes = await env.db
     .prepare(
       `SELECT f.id, f.name, f.size, f.mime, f.path, f.owner, f.uploaded_at,
+              f.mtime, f.width, f.height, f.duration_ms, f.fps, f.v_bitrate, f.a_bitrate,
               (SELECT COUNT(*) FROM shares s WHERE s.file_id = f.id) AS share_count,
               (SELECT COALESCE(SUM(s.download_count), 0) FROM shares s WHERE s.file_id = f.id) AS download_count
        FROM files f
