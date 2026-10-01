@@ -1,10 +1,17 @@
 name: Deploy netdisk (Worker)
 
-# 手动触发。首次部署前需先在 Cloudflare 建好：
-#   - R2 桶: cloud-r2pan
-#   - D1 库: cloud-r2pan  （建好后把 id 填进 netdisk/wrangler.jsonc 的 database_id）
-#   - Secret: 在 Worker 上设置 admin（后台管理密码）
-# 并确保 GitHub 仓库 Secret 里的 CF_API_TOKEN 具备 Workers 脚本 / D1 / R2 的编辑权限。
+# 手动触发（workflow_dispatch）。首次部署前需在 Cloudflare 控制台建好资源：
+#   1) R2 桶: cloud-r2pan            （仅按名字绑定，无需 ID）
+#   2) D1 库: cloud-r2pan            → 建好后把页面顶部的 Database ID 回填到
+#                                      netdisk/wrangler.jsonc 的 database_id（空串必失败）
+#   3) 自定义域/路由: 给 cloud-r2pan Worker 绑定 disk.starsobservereric.cc.cd
+#      （Worker → Settings → Triggers → Custom Domains，否则只活在 *.workers.dev）
+#   4) admin 后台密码（二选一）:
+#      a) 控制台 Worker → Settings → Variables and Secrets 手动加 admin（简单）
+#      b) 本仓库 Secrets 加 NETDISK_ADMIN，本工作流自动 wrangler secret put admin
+#   5) （可选，对应防刷/DDoS）Turnstile: 控制台申请 sitekey+secret，加到 Worker 的
+#      turnstile_sitekey / turnstile_secret 两个变量
+# 要求：CF_API_TOKEN 具备 Workers 脚本 / D1 / R2 / Pages 编辑权限（已配齐）。
 on:
   workflow_dispatch:
 
@@ -64,6 +71,14 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # admin 后台密码：若本仓库配置了 NETDISK_ADMIN 则自动注入 Worker；
+      # 否则请在 Cloudflare 控制台给 cloud-r2pan Worker 手动添加 admin 密钥。
+      - name: Set netdisk admin secret (optional, from NETDISK_ADMIN)
+        if: ${{ secrets.NETDISK_ADMIN != '' }}
+        env:
+          NETDISK_ADMIN: ${{ secrets.NETDISK_ADMIN }}
+        run: printf '%s' "$NETDISK_ADMIN" | npx wrangler secret put admin --remote
 
       - name: Deploy Worker
         run: npx wrangler deploy
