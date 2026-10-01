@@ -289,6 +289,98 @@ body {
   margin-bottom: 14px;
 }
 
+/* ── 顶栏：列数调节（自动 + 手动）───────────────
+   中间显示的是"当前生效列数"；**点它**即把手动偏置归零，回到纯自动。
+   手动只调 **偏置（bias）**，不锁死具体数值 —— 这样拖动/缩放窗口时列数依旧会自动增减，
+   同时用户按 ± 也能在当前基础上增减：两种需求同时成立。 */
+.colctl {
+  display: flex; align-items: center; gap: 2px; padding: 3px 4px;
+  border-radius: 12px; background: var(--sf); border: 1px solid var(--stroke);
+}
+.colctl button {
+  flex: none; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 8px;
+  cursor: pointer; font-family: inherit; font-size: 16px; line-height: 1;
+  color: var(--text); background: transparent;
+  display: flex; align-items: center; justify-content: center;
+  transition: background .15s, transform .12s;
+}
+.colctl button:hover { background: var(--sf-strong); }
+.colctl button:active { transform: scale(.9); }
+.colctl button[disabled] { opacity: .3; pointer-events: none; }
+.colctl .lbl {
+  min-width: 42px; text-align: center; cursor: pointer; user-select: none;
+  font-size: 10.5px; color: var(--text-3); line-height: 1.15;
+}
+.colctl .lbl b {
+  display: block; font-size: 12.5px; font-weight: 700; color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.colctl .lbl.manual b { color: #fbbf24; }
+
+/* ── 文件管理器（资源管理器风格）─────────────── */
+.fm-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.crumb { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; font-size: 13px; min-width: 0; }
+.crumb a { color: var(--text-2); cursor: pointer; padding: 4px 8px; border-radius: 9px; white-space: nowrap; }
+.crumb a:hover { background: var(--sf-strong); color: var(--text); }
+.crumb .sep { color: var(--text-3); opacity: .6; }
+.fm-seg { display: inline-flex; padding: 3px; border-radius: 12px; background: var(--sf); border: 1px solid var(--stroke); }
+.fm-seg button {
+  border: 0; background: transparent; color: var(--text-2); font: inherit;
+  font-size: 12.5px; padding: 6px 12px; border-radius: 9px; cursor: pointer;
+}
+.fm-seg button.on { background: var(--sf-strong); color: var(--text); font-weight: 600; }
+.fm-sizer { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-3); }
+.fm-sizer input[type=range] { width: 120px; }
+
+/* 多列并行：列数 = JS 算出的自动值 + 手动偏置，写进 --ui-cols */
+.fmc { display: grid; gap: 14px; align-items: start; grid-template-columns: repeat(var(--ui-cols, 1), minmax(0, 1fr)); }
+.fmc > .fcol { min-width: 0; }
+
+/* 详细信息：固定表格布局 —— 列宽不足时截断而不是把整页撑破 */
+.fm-tbl { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+.fm-tbl th {
+  text-align: left; padding: 8px 9px; color: var(--text-3); font-weight: 600; font-size: 11.5px;
+  border-bottom: 1px solid var(--tbl-divider); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.fm-tbl td {
+  padding: 9px; border-bottom: 1px solid var(--tbl-divider);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;
+}
+.fm-tbl tbody tr:hover { background: var(--tbl-hover); }
+.fm-tbl .num { font-variant-numeric: tabular-nums; }
+.fm-tbl .nm { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.fm-tbl .nm .tx { overflow: hidden; text-overflow: ellipsis; }
+.fm-act { display: flex; gap: 5px; }
+.fm-act button {
+  border: 0; background: var(--sf); color: var(--text-2); border-radius: 8px;
+  width: 26px; height: 26px; cursor: pointer; font-size: 13px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+.fm-act button:hover { background: var(--sf-strong); color: var(--text); }
+.fm-act button.dg:hover { background: rgba(255,69,58,.18); color: #ffb3ae; }
+
+/* 缩略图模式 */
+.fm-thumbs { display: grid; gap: 12px; grid-template-columns: repeat(var(--ui-cols, 4), minmax(0, 1fr)); }
+.thumb { border-radius: 14px; overflow: hidden; background: var(--sf); border: 1px solid var(--stroke); }
+.thumb .pv {
+  width: 100%; aspect-ratio: 1 / 1; overflow: hidden;
+  display: flex; align-items: center; justify-content: center; background: var(--track-bg);
+}
+.thumb .pv img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb .pv .ph { font-size: 26px; color: var(--text-3); }
+.thumb .mt { padding: 7px 9px; border-top: 1px solid var(--stroke); }
+.thumb .mt .n { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thumb .mt .s { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+
+/* 投放区：既保留单独的投放条，也支持把文件拖到整个内容区 */
+.fm-drop {
+  border: 1px dashed var(--stroke-strong); border-radius: 14px; padding: 14px;
+  text-align: center; color: var(--text-3); font-size: 12.5px; margin-bottom: 12px;
+  transition: background .15s, border-color .15s;
+}
+.fm-drop.over { background: var(--sf-strong); border-color: #0a84ff; color: var(--text); }
+.fm-host.over { outline: 2px dashed #0a84ff; outline-offset: 4px; border-radius: 14px; }
+
 /* ── 玻璃卡片 ─────────────────────────── */
 .glass {
   background: var(--glass);
@@ -698,6 +790,16 @@ const I18N = {
     allFiles: '全部文件', noFiles: '还没有文件，上传一个试试', createShare: '创建分享', createDirect: '创建直链', del: '删除',
     tooLarge: '「{name}」超过 100 MB 限制', uploadOk: '「{name}」上传成功', uploadFail: '「{name}」上传失败',
     uploadDone: '完成 ✅', uploadFailShort: '失败',
+    // 文件管理器（资源管理器风格）
+    fmNewFolder: '新建文件夹', fmFolderName: '文件夹名称', fmCreate: '创建', fmUp: '返回上级',
+    fmRoot: '根目录',
+    fmViewDetails: '详细信息', fmViewThumbs: '缩略图', fmThumbSize: '缩略图大小',
+    fmUpload: '上传文件', fmRefresh: '刷新', fmDropHint: '拖拽文件到此处，上传到当前目录',
+    fmEmptyDir: '这个文件夹是空的', fmLoading: '加载中…', fmFolderCount: '文件夹', fmFileCount: '文件',
+    colsLabel: '列数', colsAutoBack: '已恢复「随窗口自动分列」', colsMin: '已经是 1 列了', colsMax: '列数已达上限',
+    colResolution: '分辨率', colModified: '修改时间', colDuration: '时长', colFps: '帧率',
+    colVBitrate: '视频码率', colABitrate: '音频码率', colMetaNone: '—',
+    newFolderOk: '已创建文件夹「{name}」', newFolderFail: '创建失败：{msg}',
     // 分享弹窗
     shareModalTitle: '创建分享链接', shareModalSub: '生成公开下载链接，可设置有效期与下载次数上限',
     validity: '有效期', perm: '永久有效', h1: '1 小时', d1: '1 天', d7: '7 天', d30: '30 天',
@@ -1058,6 +1160,16 @@ const I18N = {
     allFiles: 'All Files', noFiles: 'No files yet — upload one to get started', createShare: 'Share', createDirect: 'Direct', del: 'Delete',
     tooLarge: '"{name}" exceeds the 100 MB limit', uploadOk: '"{name}" uploaded', uploadFail: '"{name}" upload failed',
     uploadDone: 'Done ✅', uploadFailShort: 'Failed',
+    // File manager (Explorer-style)
+    fmNewFolder: 'New folder', fmFolderName: 'Folder name', fmCreate: 'Create', fmUp: 'Up',
+    fmRoot: 'Root',
+    fmViewDetails: 'Details', fmViewThumbs: 'Thumbnails', fmThumbSize: 'Thumbnail size',
+    fmUpload: 'Upload', fmRefresh: 'Refresh', fmDropHint: 'Drop files here to upload into this folder',
+    fmEmptyDir: 'This folder is empty', fmLoading: 'Loading…', fmFolderCount: 'folders', fmFileCount: 'files',
+    colsLabel: 'Cols', colsAutoBack: 'Back to auto column count', colsMin: 'Already 1 column', colsMax: 'Column limit reached',
+    colResolution: 'Resolution', colModified: 'Modified', colDuration: 'Duration', colFps: 'FPS',
+    colVBitrate: 'V-bitrate', colABitrate: 'A-bitrate', colMetaNone: '—',
+    newFolderOk: 'Folder "{name}" created', newFolderFail: 'Failed: {msg}',
     // 分享弹窗
     shareModalTitle: 'Create Share Link', shareModalSub: 'Generate a public download link with optional expiry and download cap',
     validity: 'Validity', perm: 'Forever', h1: '1 hour', d1: '1 day', d7: '7 days', d30: '30 days',
@@ -1676,6 +1788,9 @@ async function showApp(){
     // 权限骨架：后端未返回 is_admin 时（旧版本）一律按管理员处理，避免把人锁住
     IS_ADMIN = s.is_admin !== false;
     ME_NAME = s.user || 'admin';
+    // 普通用户的"落地目录"：后端给 landing_dir，一进文件页直接就是他自己的个人文件夹；
+    // 管理员为 null ⇒ 落在根目录（根目录只放各用户文件夹 + 系统目录）。
+    FM.start = s.landing_dir || null;
     // 隐藏路由：访问 /admin/apple 强制 Apple 玻璃风格（暗色紫蓝渐变）
     const path = location.pathname;
     if (/\/admin\/apple(\/|$)/.test(path)) {
@@ -1720,6 +1835,11 @@ async function showApp(){
         <span class="bar"><i id="pill-bar" style="width:0%"></i></span>
         <span id="pill-text">— / —</span>
       </div>
+      <div class="colctl" id="colctl">
+        <button id="col-minus" title="${esc(t('colsLabel'))} −1" aria-label="减少列数">−</button>
+        <div class="lbl" id="col-lbl" title="${esc(t('colsAutoBack'))}">${esc(t('colsLabel'))}<b id="col-num">1</b></div>
+        <button id="col-plus" title="${esc(t('colsLabel'))} +1" aria-label="增加列数">+</button>
+      </div>
       <button class="btn sm" id="theme-toggle" title="🌙 / ☀️" style="font-size:16px;padding:9px 11px;line-height:1">${document.documentElement.dataset.theme === 'light' ? '🌙' : '☀️'}</button>
       <button class="btn sm" id="lang-btn">${esc(t('switchTo'))}</button>
       <button class="btn sm" id="logout-btn">${esc(t('logout'))}</button>
@@ -1745,6 +1865,10 @@ async function showApp(){
       try { localStorage.setItem('sbCollapsed', next); } catch (e) { /* 存不下也不影响本次折叠 */ }
     };
   }
+
+  // 顶栏「列数」调节：读回上次的手动偏置并绑定 − / 列数 / +
+  loadColBias();
+  bindColCtl();
 
   // 绑定侧边栏事件
   $('#sidebar').addEventListener('click', e => {
@@ -1900,79 +2024,514 @@ async function loadOverview(){
   $('#goto-logs').onclick = () => switchTab('logs');
 }
 
-/* ═══════════ 文件 ═══════════ */
-async function loadFiles(){
-  const { files } = await api('/api/admin/files');
-  $('#view').innerHTML = `
-    <div class="dropzone" id="dropzone">
-      <div class="icon">☁️</div>
-      <div class="t">${esc(t('dropTitle'))}</div>
-      <div class="d">${esc(t('dropDesc'))}</div>
-      <input type="file" id="file-input" multiple hidden>
-    </div>
-    <div id="upload-list"></div>
-    <div class="glass section">
-      <div class="section-title"><h2>📁 ${esc(t('allFiles'))}（${files.length}）</h2></div>
-      ${files.length ? `
-      <div style="overflow-x:auto"><table class="tbl">
-        <thead><tr><th style="width:44px"></th><th>${esc(t('colName'))}</th><th>${esc(t('colSize'))}</th><th>${esc(t('colShareCount'))}</th><th>${esc(t('colDownloads'))}</th><th>${esc(t('colUploaded'))}</th><th style="width:170px">${esc(t('colActions'))}</th></tr></thead>
-        <tbody>${files.map(f => `
-          <tr>
-            <td>${ficon(f.name)}</td>
-            <td class="name-cell" title="${esc(f.name)}">${esc(f.name)}</td>
-            <td class="num">${fmtSize(f.size)}</td>
-            <td class="num">${f.share_count}</td>
-            <td class="num">${f.download_count}</td>
-            <td class="num">${fmtTime(f.uploaded_at)}</td>
-            <td><div class="actions-cell">
-              <button class="btn sm primary" data-share="${f.id}">${esc(t('createShare'))}</button>
-              <button class="btn sm" data-direct="${f.id}" style="background:rgba(250,204,21,0.15);border-color:rgba(250,204,21,0.35);color:#fde68a">${esc(t('createDirect'))}</button>
-              <button class="btn sm danger" data-del="${f.id}" data-name="${esc(f.name)}">${esc(t('del'))}</button>
-            </div></td>
-          </tr>`).join('')}
-        </tbody>
-      </table></div>` : `<div class="empty"><div class="icon">📭</div>${esc(t('noFiles'))}</div>`}
-    </div>`;
+/* ═══════════ 文件管理器状态 ═══════════
+   FM.data 直接就是 /api/admin/dirs 的返回（含 dirs / files / breadcrumb / writable）。 */
+const FM = { path: null, view: 'details', thumb: 150, data: null, start: null };
 
-  const dz = $('#dropzone'), fi = $('#file-input');
-  dz.onclick = () => fi.click();
-  dz.ondragover = e => { e.preventDefault(); dz.classList.add('over'); };
-  dz.ondragleave = () => dz.classList.remove('over');
-  dz.ondrop = e => { e.preventDefault(); dz.classList.remove('over'); uploadFiles([...e.dataTransfer.files]); };
-  fi.onchange = () => { uploadFiles([...fi.files]); fi.value = ''; };
-
-  $$('[data-share]').forEach(b => b.onclick = () => openShareModal(b.dataset.share));
-  $$('[data-direct]').forEach(b => b.onclick = () => openDirectModal(b.dataset.direct));
-  $$('[data-del]').forEach(b => b.onclick = async () => {
-    if(!(await confirmDialog(t('deleteFileT'), t('deleteFileD', {name: b.dataset.name})))) return;
-    await api(`/api/admin/files/${b.dataset.del}`, { method:'DELETE' });
-    toast(t('fileDeleted'));
-    loadFiles();
-  });
+function fmLoadPrefs(){
+  try{
+    const v = localStorage.getItem('fmView');
+    if(v === 'thumbs' || v === 'details') FM.view = v;
+    const th = parseInt(localStorage.getItem('fmThumb') || '', 10);
+    if(th >= 80 && th <= 320) FM.thumb = th;
+  }catch(e){ /* 存储不可用（隐私模式 / file://）时用默认值即可 */ }
+}
+function fmSavePrefs(){
+  try{ localStorage.setItem('fmView', FM.view); localStorage.setItem('fmThumb', String(FM.thumb)); }catch(e){}
 }
 
-function uploadFiles(files){
+const DASH = '—';
+function fmtRes(f){ return (f.width && f.height) ? `${f.width}×${f.height}` : DASH; }
+function fmtDur(ms){
+  if(!ms) return DASH;
+  const s = Math.round(ms/1000), h = Math.floor(s/3600), m = Math.floor(s%3600/60), ss = s%60;
+  const p = x => String(x).padStart(2,'0');
+  return h ? `${h}:${p(m)}:${p(ss)}` : `${m}:${p(ss)}`;
+}
+function fmtRate(bps){
+  if(!bps) return DASH;
+  if(bps >= 1e6){
+    // ≥10 Mbps 保留 1 位小数：31.4 Mbps 比 31.40 Mbps 更短，正好躲开列宽截断
+    const m = bps / 1e6;
+    return (m >= 10 ? m.toFixed(1) : m.toFixed(2)) + ' Mbps';
+  }
+  return Math.round(bps/1e3) + ' kbps';
+}
+/** 帧率：最多两位小数，且去掉多余的 .00（29.97 保留，30 不显示成 30.00） */
+function fmtFps(v){
+  if(!v) return DASH;
+  const n = Math.round(Number(v) * 100) / 100;
+  return Number.isFinite(n) ? String(n) : DASH;
+}
+const isImgFile = f => /^image\//.test(f.mime || '') || /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(f.name || '');
+const isVidFile = f => /^video\//.test(f.mime || '') || /\.(mp4|m4v|mov|webm|mkv|avi)$/i.test(f.name || '');
+
+/* ═══════════ 列数控制（自动 + 手动）═══════════
+   核心取舍：真正的列数**永远由可用宽度算出来**（auto），手动只调一个"偏置 bias"。
+   于是两个需求同时成立 ——
+     · 横向拉伸/收窄窗口 → auto 变化 → 列数自动增减；
+     · 用户按 ± → bias 变化 → 在当前基础上增减。
+   若把手动值写死，缩放就会失效（那是另一套需求）；若只保留自动，就没了手动。
+   点中间的「列数」文字 = bias 归零 = 回到纯自动。 */
+const COL = { bias: 0, eff: 1 };
+
+/** 单列目标宽度：详细信息一张表要放 8 列，820px 才不会糊成一团；缩略图用滑杆的值 */
+function colUnit(){ return FM.view === 'thumbs' ? FM.thumb : 820; }
+function colMax(){ return FM.view === 'thumbs' ? 20 : 6; }
+
+function autoCols(){
+  const host = $('#view');
+  const avail = Math.max(320, (host ? host.clientWidth : window.innerWidth) - 2);
+  return Math.max(1, Math.floor(avail / colUnit()));
+}
+
+/** 算出生效列数 → 写进 CSS 变量 → 更新顶栏标签。返回是否发生了变化 */
+function syncCols(){
+  const eff = Math.min(colMax(), Math.max(1, autoCols() + COL.bias));
+  const changed = eff !== COL.eff;
+  COL.eff = eff;
+  document.documentElement.style.setProperty('--ui-cols', String(eff));
+  const num = $('#col-num'); if(num) num.textContent = String(eff);
+  const lbl = $('#col-lbl'); if(lbl) lbl.classList.toggle('manual', COL.bias !== 0);
+  const mi = $('#col-minus'), pl = $('#col-plus');
+  if(mi) mi.disabled = eff <= 1;
+  if(pl) pl.disabled = eff >= colMax();
+  return changed;
+}
+
+/** 列数变化后：详细信息模式需要按新列数**重新切分表格**，缩略图交给 CSS 重排即可 */
+function applyCols(){
+  const changed = syncCols();
+  if(changed && FM.view === 'details' && FM.data) renderFileList();
+}
+function saveColBias(){ try{ localStorage.setItem('colBias', String(COL.bias)); }catch(e){} }
+function loadColBias(){
+  try{
+    const v = parseInt(localStorage.getItem('colBias') || '0', 10);
+    if(Number.isFinite(v)) COL.bias = Math.max(-5, Math.min(8, v));
+  }catch(e){}
+}
+function bindColCtl(){
+  const p = $('#col-plus'), m = $('#col-minus'), l = $('#col-lbl');
+  if(!p || !m || !l) return;
+  p.onclick = () => { if(COL.eff >= colMax()) return toast(t('colsMax')); COL.bias++; saveColBias(); applyCols(); };
+  m.onclick = () => { if(COL.eff <= 1) return toast(t('colsMin')); COL.bias--; saveColBias(); applyCols(); };
+  l.onclick = () => { COL.bias = 0; saveColBias(); applyCols(); toast(t('colsAutoBack')); };
+}
+// 窗口尺寸变化 → 重算列数（这就是"横向拉伸网页时列数仍会自动增减"）
+let colResizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(colResizeTimer);
+  colResizeTimer = setTimeout(() => applyCols(), 120);
+});
+
+/* ═══════════ 媒体元数据探测（在浏览器里做）═══════════
+   为什么不放服务端：Worker 运行时没有 ffprobe / ImageMagick，
+   而浏览器自带解码器（Image / HTMLVideoElement），探测零额外成本、也不占 Worker CPU。
+   探测是**尽力而为**：拿不到就留空（界面显示 —），绝不阻塞上传。 */
+function b64Json(obj){
+  try{
+    const bytes = new TextEncoder().encode(JSON.stringify(obj));
+    let bin = '';
+    for(const b of bytes) bin += String.fromCharCode(b);
+    return btoa(bin);
+  }catch(e){ return ''; }
+}
+const readU32 = (b,o) => (((b[o]<<24)|(b[o+1]<<16)|(b[o+2]<<8)|b[o+3])>>>0);
+const fourcc  = (b,o) => String.fromCharCode(b[o],b[o+1],b[o+2],b[o+3]);
+
+/**
+ * 轻量 MP4/MOV 解析：取帧率与**分轨**码率。
+ * 关键点：只读 box 头、按 size 直接跳过内容，所以即使 mdat 有几十 GB 也不会真读它。
+ * 拿不到（如分片 MP4、WebM）就返回 null，由调用方留空。
+ */
+async function probeMp4(file){
+  const read = async (start, len) => new Uint8Array(await file.slice(start, start + len).arrayBuffer());
+  const tracks = [];
+  try{
+    async function walk(start, end, tr){
+      let p = start;
+      while(p + 8 <= end){
+        const h = await read(p, Math.min(16, end - p));
+        if(h.length < 8) return;
+        let size = readU32(h, 0);
+        const type = fourcc(h, 4);
+        let hdr = 8;
+        if(size === 1){                                   // 64 位长度
+          if(h.length < 16) return;
+          size = readU32(h,8) * 4294967296 + readU32(h,12); hdr = 16;
+        } else if(size === 0){ size = end - p; }           // 延伸到末尾
+        if(size < hdr || p + size > end) return;
+        const at = p + hdr, stop = p + size;
+
+        if(type === 'trak'){
+          const nt = { kind: '', timescale: 0, duration: 0, bytes: 0, samples: 0 };
+          tracks.push(nt);
+          await walk(at, stop, nt);
+        } else if(type === 'moov' || type === 'mdia' || type === 'minf' || type === 'stbl' || type === 'edts'){
+          await walk(at, stop, tr);
+        } else if(tr && type === 'hdlr'){
+          const b = await read(at, Math.min(16, stop - at));
+          if(b.length >= 12) tr.kind = fourcc(b, 8);       // payload 偏移 8 = handler_type
+        } else if(tr && type === 'mdhd'){
+          const b = await read(at, Math.min(32, stop - at));
+          if(b[0] === 1 && b.length >= 32){
+            tr.timescale = readU32(b,20); tr.duration = readU32(b,24) * 4294967296 + readU32(b,28);
+          } else if(b.length >= 20){
+            tr.timescale = readU32(b,12); tr.duration = readU32(b,16);
+          }
+        } else if(tr && type === 'stts'){
+          const b = await read(at, Math.min(16, stop - at));
+          if(b.length >= 8){
+            const n = readU32(b,4);
+            const take = Math.min(n, 512);
+            const e = await read(at + 8, take * 8);
+            let sc = 0;
+            for(let i = 0; i + 7 < e.length; i += 8) sc += readU32(e, i);
+            tr.samples = sc;
+          }
+        } else if(tr && type === 'stsz'){
+          const b = await read(at, Math.min(16, stop - at));
+          if(b.length >= 12){
+            const fixed = readU32(b,4), cnt = readU32(b,8);
+            if(fixed > 0){
+              tr.bytes = fixed * cnt;
+            } else {
+              const tbl = await read(at + 12, cnt * 4);     // 变长样本表：整张读进来求和
+              let sum = 0;
+              for(let i = 0; i + 3 < tbl.length; i += 4) sum += readU32(tbl, i);
+              tr.bytes = sum;
+            }
+          }
+        }
+        p += size;
+      }
+    }
+    await walk(0, file.size, null);
+    const v = tracks.find(x => x.kind === 'vide');
+    const a = tracks.find(x => x.kind === 'soun');
+    const durSec = v && v.timescale ? v.duration / v.timescale : 0;
+    const fps = v && v.samples && durSec > 0 ? v.samples / durSec : 0;
+    const out = {
+      fps: fps > 0 && fps < 1000 ? Math.round(fps * 1000) / 1000 : null,
+      v_bitrate: v && durSec > 0 && v.bytes ? Math.round(v.bytes * 8 / durSec) : null,
+      a_bitrate: a && durSec > 0 && a.bytes ? Math.round(a.bytes * 8 / durSec) : null,
+    };
+    // 三项都拿不到 ⇒ 当作"解析失败"返回 null（统一语义：拿不到就是拿不到）
+    return (out.fps || out.v_bitrate || out.a_bitrate) ? out : null;
+  }catch(e){ return null; }
+}
+
+async function probeFile(file){
+  const meta = {};
+  if(file.lastModified) meta.mtime = file.lastModified;
+  const img = /^image\//.test(file.type || '') || /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i.test(file.name);
+  const vid = /^video\//.test(file.type || '') || /\.(mp4|m4v|mov|webm|mkv|avi)$/i.test(file.name);
+
+  if(img){
+    try{
+      const bmp = await createImageBitmap(file);
+      meta.width = bmp.width; meta.height = bmp.height;
+      if(bmp.close) bmp.close();
+    }catch(e){
+      try{
+        const wh = await new Promise((res, rej) => {
+          const url = URL.createObjectURL(file), im = new Image();
+          im.onload = () => { res([im.naturalWidth, im.naturalHeight]); URL.revokeObjectURL(url); };
+          im.onerror = () => { URL.revokeObjectURL(url); rej(new Error('img')); };
+          im.src = url;
+        });
+        meta.width = wh[0]; meta.height = wh[1];
+      }catch(e2){ /* 探测失败就留空 */ }
+    }
+    return meta;
+  }
+
+  if(vid){
+    // 时长与分辨率：交给浏览器解码器，跨容器格式都准
+    try{
+      const el = await new Promise((res, rej) => {
+        const url = URL.createObjectURL(file), v = document.createElement('video');
+        let settled = false;
+        const fin = ok => {
+          if(settled) return; settled = true;
+          URL.revokeObjectURL(url); v.removeAttribute('src');
+          ok ? res(v) : rej(new Error('vid'));
+        };
+        v.preload = 'metadata'; v.muted = true;
+        v.onloadedmetadata = () => fin(true);
+        v.onerror = () => fin(false);
+        v.src = url;
+        setTimeout(() => fin(false), 12000);
+      });
+      if(Number.isFinite(el.duration) && el.duration > 0) meta.duration_ms = Math.round(el.duration * 1000);
+      if(el.videoWidth) { meta.width = el.videoWidth; meta.height = el.videoHeight; }
+    }catch(e){ /* 解码不了就算了 */ }
+    // 帧率与分轨码率：只有 MP4 家族能解析出（WebM/MKV 留空）
+    if(/mp4|m4v|mov|quicktime/i.test(file.type || '') || /\.(mp4|m4v|mov)$/i.test(file.name)){
+      const m = await probeMp4(file);
+      if(m){
+        if(m.fps) meta.fps = m.fps;
+        if(m.v_bitrate) meta.v_bitrate = m.v_bitrate;
+        if(m.a_bitrate) meta.a_bitrate = m.a_bitrate;
+      }
+    }
+  }
+  return meta;
+}
+
+/* ═══════════ 文件管理器（资源管理器风格） ═══════════ */
+async function loadFiles(p){
+  fmLoadPrefs();
+  const target = p || FM.path || FM.start || null;
+  const q = target ? ('?path=' + encodeURIComponent(target)) : '';
+  FM.data = await api('/api/admin/dirs' + q);
+  FM.path = FM.data.path || '/';
+  renderFM();
+}
+
+function renderFM(){
+  const d = FM.data || { dirs: [], files: [], breadcrumb: [], writable: false, path: '/' };
+  const crumbs = [{ name: t('fmRoot'), path: '/' }, ...(d.breadcrumb || [])];
+  const crumbHtml = crumbs.map((c, i) =>
+    (i ? '<span class="sep">›</span>' : '') +
+    `<a data-go="${esc(c.path)}">${esc(c.name)}</a>`).join('');
+
+  $('#view').innerHTML = `
+  <div class="glass section fm-host" id="fm-host">
+    <div class="fm-bar">
+      <div class="crumb">${crumbHtml}</div>
+      <div style="flex:1"></div>
+      ${d.writable === false ? '' : `<button class="btn sm" id="fm-newdir">＋ ${esc(t('fmNewFolder'))}</button>`}
+      <button class="btn sm primary" id="fm-upload">⬆ ${esc(t('fmUpload'))}</button>
+      <div class="fm-seg">
+        <button id="fm-v-details" class="${FM.view === 'details' ? 'on' : ''}">☰ ${esc(t('fmViewDetails'))}</button>
+        <button id="fm-v-thumbs" class="${FM.view === 'thumbs' ? 'on' : ''}">▦ ${esc(t('fmViewThumbs'))}</button>
+      </div>
+      ${FM.view === 'thumbs' ? `<div class="fm-sizer">${esc(t('fmThumbSize'))}
+        <input type="range" id="fm-thumb" min="80" max="320" step="10" value="${FM.thumb}"></div>` : ''}
+    </div>
+    <div class="fm-drop" id="fm-drop">${esc(t('fmDropHint'))}</div>
+    <div id="fm-upload-list"></div>
+    <div id="fm-list"></div>
+    <input type="file" id="fm-file" multiple hidden>
+  </div>`;
+
+  const host = $('#fm-host'), fi = $('#fm-file'), drop = $('#fm-drop');
+  $('#fm-upload').onclick = () => fi.click();
+  fi.onchange = () => { const l = [...fi.files]; fi.value = ''; if(l.length) uploadFiles(l); };
+  const nd = $('#fm-newdir'); if(nd) nd.onclick = newFolderDialog;
+  $('#fm-v-details').onclick = () => { FM.view = 'details'; fmSavePrefs(); renderFM(); };
+  $('#fm-v-thumbs').onclick  = () => { FM.view = 'thumbs';  fmSavePrefs(); renderFM(); };
+  const th = $('#fm-thumb');
+  if(th) th.oninput = () => { FM.thumb = +th.value; fmSavePrefs(); syncCols(); renderFileList(); };
+
+  // 拖拽上传：单独的投放条 + 整个文件区都能接
+  const allowed = d.writable !== false;
+  const hoverOn = e => { e.preventDefault(); e.stopPropagation(); if(allowed) drop.classList.add('over'); };
+  const hoverOff = e => { e.preventDefault(); drop.classList.remove('over'); };
+  host.addEventListener('dragenter', hoverOn);
+  host.addEventListener('dragover', hoverOn);
+  host.addEventListener('dragleave', hoverOff);
+  host.addEventListener('drop', e => {
+    hoverOff(e);
+    if(!allowed) return;
+    const l = e.dataTransfer && e.dataTransfer.files ? [...e.dataTransfer.files] : [];
+    if(l.length) uploadFiles(l);
+  });
+  drop.addEventListener('click', () => fi.click());
+
+  syncCols();
+  renderFileList();
+}
+
+/** 把条目按"列优先"均分到 n 列 —— 阅读顺序是自上而下、再进下一列，和报纸一致 */
+function splitColumns(items, n){
+  const out = Array.from({ length: n }, () => []);
+  const per = Math.max(1, Math.ceil(items.length / n));
+  items.forEach((it, i) => out[Math.min(n - 1, Math.floor(i / per))].push(it));
+  return out;
+}
+
+function renderFileList(){
+  const d = FM.data, host = $('#fm-list');
+  if(!d || !host) return;
+  const items = [];
+  for(const x of (d.dirs  || [])) items.push({ isDir: true,  ...x });
+  for(const x of (d.files || [])) items.push({ isDir: false, ...x });
+  if(!items.length){
+    host.innerHTML = `<div class="empty"><div class="icon">📂</div>${esc(t('fmEmptyDir'))}</div>`;
+    return;
+  }
+  host.innerHTML = FM.view === 'thumbs' ? thumbsHtml(items) : detailsHtml(items);
+  bindRowActions();
+}
+
+function detailsRow(it){
+  if(it.isDir){
+    const ro = it.system || it.virtual;
+    return `<tr class="fm-dir" data-go="${esc(it.path)}">
+      <td><div class="nm"><span>📁</span><span class="tx">${esc(it.name)}</span></div></td>
+      <td class="num">${DASH}</td><td class="num">${DASH}</td><td class="num">${DASH}</td>
+      <td class="num">${DASH}</td><td class="num">${DASH}</td><td class="num">${DASH}</td><td class="num">${DASH}</td>
+      <td><div class="fm-act">${ro ? '' : `<button class="dg" data-rmdir="${esc(it.path)}" title="${esc(t('del'))}">🗑</button>`}</div></td>
+    </tr>`;
+  }
+  const f = it, vid = isVidFile(f);
+  return `<tr>
+    <td><div class="nm">${ficon(f.name)}<span class="tx" title="${esc(f.name)}">${esc(f.name)}</span></div></td>
+    <td class="num">${fmtSize(f.size)}</td>
+    <td class="num">${fmtTime(f.mtime || f.uploaded_at)}</td>
+    <td class="num">${fmtRes(f)}</td>
+    <td class="num">${vid ? fmtDur(f.duration_ms) : DASH}</td>
+    <td class="num">${vid ? fmtFps(f.fps) : DASH}</td>
+    <td class="num">${vid ? fmtRate(f.v_bitrate) : DASH}</td>
+    <td class="num">${vid ? fmtRate(f.a_bitrate) : DASH}</td>
+    <td><div class="fm-act">
+      <button data-share="${f.id}" title="${esc(t('createShare'))}">🔗</button>
+      <button data-del="${f.id}" data-name="${esc(f.name)}" class="dg" title="${esc(t('del'))}">🗑</button>
+    </div></td>
+  </tr>`;
+}
+
+function detailsHtml(items){
+  const n = Math.max(1, COL.eff);
+  // 列宽按"8 个媒体列 + 名称"实测调过：单列表 ~840px 时仍能完整显示 3840×2160 与 31.4 Mbps。
+  // 每个表头都带 title：万一列被压窄，鼠标悬停还能看到完整列名。
+  const th = (w, key) => `<th style="width:${w}" title="${esc(t(key))}">${esc(t(key))}</th>`;
+  const head = `<tr>
+      <th style="width:30%" title="${esc(t('colName'))}">${esc(t('colName'))}</th>
+      ${th('66px','colSize')}
+      ${th('116px','colModified')}
+      ${th('100px','colResolution')}
+      ${th('74px','colDuration')}
+      ${th('52px','colFps')}
+      ${th('94px','colVBitrate')}
+      ${th('94px','colABitrate')}
+      ${th('72px','colActions')}
+    </tr>`;
+  return `<div class="fmc">${splitColumns(items, n).map(col => `
+    <div class="fcol"><table class="fm-tbl">
+      <thead>${head}</thead>
+      <tbody>${col.map(detailsRow).join('')}</tbody>
+    </table></div>`).join('')}</div>`;
+}
+
+function thumbsHtml(items){
+  return `<div class="fm-thumbs">${items.map(it => {
+    if(it.isDir){
+      return `<div class="thumb" data-go="${esc(it.path)}" title="${esc(it.name)}">
+        <div class="pv"><span class="ph">📁</span></div>
+        <div class="mt"><div class="n">${esc(it.name)}</div><div class="s">${esc(t('fmFolderCount'))}</div></div>
+      </div>`;
+    }
+    const img = isImgFile(it), vid = isVidFile(it);
+    const pv = img
+      ? `<img loading="lazy" decoding="async" src="/api/admin/files/${encodeURIComponent(it.id)}/raw" alt="">`
+      : `<span class="ph">${vid ? '🎬' : esc((extOf(it.name) || '?').toUpperCase().slice(0,4))}</span>`;
+    const extra = vid ? fmtDur(it.duration_ms) : (it.width ? `${it.width}×${it.height}` : '');
+    return `<div class="thumb" title="${esc(it.name)}">
+      <div class="pv">${pv}</div>
+      <div class="mt">
+        <div class="n">${esc(it.name)}</div>
+        <div class="s">${esc(fmtSize(it.size))}${extra && extra !== DASH ? ' · ' + esc(extra) : ''}</div>
+      </div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function bindRowActions(){
+  $$('[data-go]').forEach(el => el.onclick = e => { e.stopPropagation(); loadFiles(el.dataset.go); });
+  $$('[data-del]').forEach(b => b.onclick = async e => {
+    e.stopPropagation();
+    if(!(await confirmDialog(t('deleteFileT'), t('deleteFileD', { name: b.dataset.name })))) return;
+    await api(`/api/admin/files/${b.dataset.del}`, { method:'DELETE' });
+    toast(t('fileDeleted'));
+    loadFiles(FM.path);
+  });
+  $$('[data-rmdir]').forEach(b => b.onclick = async e => {
+    e.stopPropagation();
+    const name = String(b.dataset.rmdir).split('/').filter(Boolean).pop() || '';
+    if(!(await confirmDialog(t('deleteFileT'), t('deleteFileD', { name })))) return;
+    await api('/api/admin/dirs/delete', { method:'POST', body: JSON.stringify({ path: b.dataset.rmdir }) });
+    toast(t('fileDeleted'));
+    loadFiles(FM.path);
+  });
+  $$('[data-share]').forEach(b => b.onclick = e => { e.stopPropagation(); openShareModal(b.dataset.share); });
+}
+
+function newFolderDialog(){
+  openModal(`
+    <h3>${esc(t('fmNewFolder'))}</h3>
+    <div class="field">
+      <label>${esc(t('fmFolderName'))}</label>
+      <input type="text" id="nf-name" autocomplete="off" spellcheck="false">
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">
+      <button class="btn" id="nf-cancel">${esc(t('cancel'))}</button>
+      <button class="btn primary" id="nf-ok">${esc(t('fmCreate'))}</button>
+    </div>`);
+  const inp = $('#nf-name'); if(inp) inp.focus();
+  $('#nf-cancel').onclick = closeModal;
+  $('#nf-ok').onclick = async () => {
+    const name = ($('#nf-name').value || '').trim();
+    if(!name) return;
+    try{
+      await api('/api/admin/dirs', { method:'POST', body: JSON.stringify({ parent: FM.path, name }) });
+      closeModal();
+      toast(t('newFolderOk', { name }));
+      loadFiles(FM.path);
+    }catch(e){
+      toast(t('newFolderFail', { msg: e.message }), 'err');
+    }
+  };
+}
+
+async function uploadFiles(files){
+  const dir = FM.path || '/';
+  const listHost = $('#fm-upload-list');
   for(const file of files){
     if(file.size > 100 * 1024 * 1024){ toast(t('tooLarge', {name: file.name}), 'err'); continue; }
     const item = document.createElement('div');
     item.className = 'upload-item glass';
     item.innerHTML = `${ficon(file.name)}<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(file.name)}</span>
-      <div class="prog"><i></i></div><span class="pct">0%</span>`;
-    $('#upload-list').prepend(item);
+      <div class="prog"><i></i></div><span class="pct">…</span>`;
+    if(listHost) listHost.prepend(item);
+
+    // 先探测元数据（图片宽高 / 视频时长·分辨率·帧率·分轨码率）再上传。
+    // 探测失败一律不影响上传 —— 元数据只是锦上添花。
+    let metaHeader = '';
+    try{ metaHeader = b64Json(await probeFile(file)); }catch(e){ metaHeader = ''; }
+
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/admin/upload');
     xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
+    xhr.setRequestHeader('X-File-Path', encodeURIComponent(dir));
+    if(metaHeader) xhr.setRequestHeader('X-File-Meta', metaHeader);
     xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
     xhr.upload.onprogress = e => {
+      if(!e.lengthComputable) return;
       const pct = Math.round(e.loaded / e.total * 100);
-      item.querySelector('.prog i').style.width = pct + '%';
-      item.querySelector('.pct').textContent = pct + '%';
+      const bar = item.querySelector('.prog i'), tx = item.querySelector('.pct');
+      if(bar) bar.style.width = pct + '%';
+      if(tx) tx.textContent = pct + '%';
     };
     xhr.onload = () => {
-      if(xhr.status === 201){ item.querySelector('.pct').textContent = t('uploadDone'); toast(t('uploadOk', {name: file.name})); loadFiles(); }
-      else { item.querySelector('.pct').textContent = t('uploadFailShort'); toast(t('uploadFail', {name: file.name}), 'err'); }
+      const tx = item.querySelector('.pct');
+      if(xhr.status === 201){
+        if(tx) tx.textContent = t('uploadDone');
+        toast(t('uploadOk', {name: file.name}));
+        if(FM.path === dir) loadFiles(dir);   // 只有仍停在该目录时才刷新列表
+      } else {
+        if(tx) tx.textContent = t('uploadFailShort');
+        toast(t('uploadFail', {name: file.name}), 'err');
+      }
     };
-    xhr.onerror = () => { item.querySelector('.pct').textContent = t('uploadFailShort'); toast(t('uploadFail', {name: file.name}), 'err'); };
+    xhr.onerror = () => {
+      const tx = item.querySelector('.pct');
+      if(tx) tx.textContent = t('uploadFailShort');
+      toast(t('uploadFail', {name: file.name}), 'err');
+    };
     xhr.send(file);
   }
 }
