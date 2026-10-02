@@ -396,7 +396,13 @@ body {
   background: rgba(10,132,255,.12); border: 1px solid rgba(10,132,255,.35); font-size: 12.5px;
 }
 .fm-tbl th.ck, .fm-tbl td.ck { width: 34px; padding-left: 2px; padding-right: 0; }
-.fm-ck { width: 15px; height: 15px; accent-color: #0a84ff; cursor: pointer; vertical-align: middle; }
+/* ⚠️ 列表里所有复选框必须**同一尺寸**：以前只有 .fm-ck 显式给了 15px，
+   而表头全选（.fm-all）、存储浏览（.stg-chk / #stg-check-all）走的是浏览器默认
+   尺寸（Chrome 约 13px），看着就像"左上角那个白框比下面的小一圈"。
+   统一在这里声明，别再只给其中一类加宽高。 */
+.fm-ck, .fm-all, .stg-chk, .tbl th input[type="checkbox"], .tbl td input[type="checkbox"] {
+  width: 15px; height: 15px; accent-color: #0a84ff; cursor: pointer; vertical-align: middle;
+}
 
 /* ── 概览：容量卡片 + 两张饼图 ── */
 .cap-bar { height: 10px; border-radius: 6px; background: var(--track-bg); overflow: hidden; margin: 2px 0 16px; }
@@ -456,10 +462,19 @@ body {
 }
 :root[data-theme="apple-dark"] .topbar { border: 1px solid var(--stroke-strong); box-shadow: 0 14px 40px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.25); }
 .logo { width: 38px; height: 38px; border-radius: 12px; flex: none;
-  display: flex; align-items: center; justify-content: center;
+  display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden;
   background: linear-gradient(150deg, #67e8f9, #3b82f6 55%, #8b5cf6);
   box-shadow: var(--shadow-logo); }
 .logo svg { width: 22px; height: 22px; }
+/* 顶栏头像：图片盖在渐变底上（object-fit 裁成方形）；加载失败就隐掉，露出底下那枚图标兜底。
+   整块是 <a>，点它回站点主页，所以这里要压掉 <a> 的蓝字与下划线。 */
+a.logo-link { flex: none; }
+a.logo-link .logo-av {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; border-radius: inherit; display: block; background: var(--sf);
+}
+a.logo-link:hover .logo-av { opacity: .85; }
+a.logo-link::after { content: ""; }
 .topbar h1 { font-size: 17px; font-weight: 700; letter-spacing: -.02em; }
 .topbar .sub { font-size: 11.5px; color: var(--text-3); margin-top: 1px; }
 .topbar .spacer { flex: 1; }
@@ -744,12 +759,22 @@ body {
 #toasts { position: fixed; top: 18px; left: 50%; transform: translateX(-50%); z-index: 200;
   display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
 .toast {
-  padding: 11px 22px; border-radius: 16px; font-size: 14px; font-weight: 600; color: var(--text);
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 12px 11px 22px; border-radius: 16px; font-size: 14px; font-weight: 600; color: var(--text);
   background: var(--glass-strong);
   backdrop-filter: none; -webkit-backdrop-filter: none;
   border: 1px solid var(--stroke); box-shadow: var(--shadow-toast);
-  animation: toastIn .35s cubic-bezier(.22,1.2,.36,1) both; max-width: 86vw; text-align: center;
+  animation: toastIn .35s cubic-bezier(.22,1.2,.36,1) both; max-width: 86vw; text-align: left;
 }
+/* 提示框右侧的红色关闭叉 —— 失败提示必须能手动关掉，否则会一直挂在屏幕顶上 */
+.toast .msg { flex: 1; min-width: 0; }
+.toast-x {
+  flex: none; width: 22px; height: 22px; padding: 0; line-height: 1;
+  border: 0; border-radius: 50%; background: var(--btn-danger-bg); cursor: pointer;
+  color: #ff453a; font-size: 14px; display: flex; align-items: center; justify-content: center;
+  transition: background .15s;
+}
+.toast-x:hover { background: var(--btn-danger-bg-hover); }
 :root[data-theme="apple"] .toast,
 :root[data-theme="apple-dark"] .toast {
   backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
@@ -820,7 +845,7 @@ const I18N = {
   zh: {
     docTitle: '{site} · 管理后台',
     // 通用
-    login: '登录', logout: '退出', cancel: '取消', confirm: '确定', copy: '复制', close: '关闭',
+    login: '登录', logout: '退出', cancel: '取消', confirm: '确定', copy: '复制', close: '关闭', goHome: '回到站点主页',
     copied: '已复制到剪贴板', save: '保存设置', saved: '设置已保存', forever: '永久',
     switchTo: 'EN', topbarSub: '管理后台 · Cloudflare Workers + R2',
     // 登录
@@ -851,7 +876,7 @@ const I18N = {
     fmNewFolder: '新建文件夹', fmFolderName: '文件夹名称', fmCreate: '创建', fmUp: '返回上级',
     fmRoot: '根目录',
     fmViewDetails: '详细信息', fmViewThumbs: '缩略图', fmThumbSize: '缩略图大小',
-    fmUpload: '上传文件', fmRefresh: '刷新', fmDropHint: '拖拽文件到此处，上传到当前目录',
+    fmUpload: '上传文件', fmUploadDir: '上传文件夹', fmRefresh: '刷新', fmDropHint: '拖拽文件或文件夹到此处，上传到当前目录',
     fmEmptyDir: '这个文件夹是空的', fmLoading: '加载中…', fmFolderCount: '文件夹', fmFileCount: '文件',
     colsLabel: '列数', colsAutoBack: '已恢复「随窗口自动分列」', colsMin: '已经是 1 列了', colsMax: '列数已达上限',
     colResolution: '分辨率', colModified: '修改时间', colDuration: '时长', colFps: '帧率',
@@ -1212,7 +1237,7 @@ const I18N = {
   en: {
     docTitle: '{site} · Admin Console',
     // 通用
-    login: 'Log in', logout: 'Log out', cancel: 'Cancel', confirm: 'Confirm', copy: 'Copy', close: 'Close',
+    login: 'Log in', logout: 'Log out', cancel: 'Cancel', confirm: 'Confirm', copy: 'Copy', close: 'Close', goHome: 'Back to site',
     copied: 'Copied to clipboard', save: 'Save Settings', saved: 'Settings saved', forever: 'Forever',
     switchTo: '中文', topbarSub: 'Admin console · Cloudflare Workers + R2',
     // 登录
@@ -1243,7 +1268,7 @@ const I18N = {
     fmNewFolder: 'New folder', fmFolderName: 'Folder name', fmCreate: 'Create', fmUp: 'Up',
     fmRoot: 'Root',
     fmViewDetails: 'Details', fmViewThumbs: 'Thumbnails', fmThumbSize: 'Thumbnail size',
-    fmUpload: 'Upload', fmRefresh: 'Refresh', fmDropHint: 'Drop files here to upload into this folder',
+    fmUpload: 'Upload', fmUploadDir: 'Upload folder', fmRefresh: 'Refresh', fmDropHint: 'Drop files or folders here to upload into this folder',
     fmEmptyDir: 'This folder is empty', fmLoading: 'Loading…', fmFolderCount: 'folders', fmFileCount: 'files',
     colsLabel: 'Cols', colsAutoBack: 'Back to auto column count', colsMin: 'Already 1 column', colsMax: 'Column limit reached',
     colResolution: 'Resolution', colModified: 'Modified', colDuration: 'Duration', colFps: 'FPS',
@@ -1668,9 +1693,28 @@ async function api(path, opts={}){
 function toast(msg, type='ok'){
   const el = document.createElement('div');
   el.className = `toast ${type}`;
-  el.textContent = msg;
+  const m = document.createElement('span');
+  m.className = 'msg';
+  m.textContent = msg;
+  const x = document.createElement('button');
+  x.type = 'button';
+  x.className = 'toast-x';
+  x.textContent = '✕';
+  x.title = t('close');
+  x.setAttribute('aria-label', t('close'));
+  let timer = setTimeout(() => dismiss(), type === 'err' ? 6000 : 2600);
+  function dismiss(){
+    if(el.dataset.done) return;
+    el.dataset.done = '1';
+    clearTimeout(timer);
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 300);
+  }
+  x.onclick = dismiss;
+  el.appendChild(m);
+  el.appendChild(x);
   $('#toasts').appendChild(el);
-  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 300); }, 2600);
+  return el;
 }
 
 function copyText(text){
@@ -1930,7 +1974,10 @@ async function showApp(){
   <div class="wrap">
     <div class="topbar">
       <button class="sb-toggle" id="sb-toggle" title="展开 / 收起左侧菜单" aria-label="展开 / 收起左侧菜单">☰</button>
-      <div class="logo"><svg viewBox="0 0 24 24" fill="none"><path d="M12 2L21 8.5V15.5L12 22L3 15.5V8.5L12 2Z" stroke="#fff" stroke-width="1.8" stroke-linejoin="round" fill="rgba(255,255,255,.14)"/><path d="M12 2V22M3 8.5L12 15L21 8.5M3 15.5L12 9L21 15.5" stroke="#fff" stroke-width="1.2" opacity=".65"/></svg></div>
+      <a class="logo logo-link" href="https://starsobservereric.cc.cd/" title="${esc(t('goHome'))}" aria-label="${esc(t('goHome'))}">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M12 2L21 8.5V15.5L12 22L3 15.5V8.5L12 2Z" stroke="#fff" stroke-width="1.8" stroke-linejoin="round" fill="rgba(255,255,255,.14)"/><path d="M12 2V22M3 8.5L12 15L21 8.5M3 15.5L12 9L21 15.5" stroke="#fff" stroke-width="1.2" opacity=".65"/></svg>
+        <img class="logo-av" src="https://starsobservereric.cc.cd/favicon-192.png" alt="" onerror="this.style.display='none'">
+      </a>
       <div><h1>${esc(siteTitle)}</h1><div class="sub">${esc(t('topbarSub'))}</div></div>
       <div class="spacer"></div>
       <div class="traffic-pill" id="traffic-pill" title="${esc(t('statTraffic'))}">
@@ -2754,20 +2801,23 @@ function renderFM(){
       <div class="crumb">${crumbHtml}</div>
       <div style="flex:1"></div>
       <div id="fm-selbar"></div>
+      <!-- ⚠️ 缩略图滑杆要贴在全选左边（用户明确要求），所以它是控制区第一项，不是最后一项 -->
+      ${FM.view === 'thumbs' ? `<div class="fm-sizer">${esc(t('fmThumbSize'))}
+        <input type="range" id="fm-thumb" min="${THUMB_MIN}" max="${THUMB_MAX}" step="10" value="${FM.thumb}"></div>` : ''}
       <button class="btn sm" id="fm-selall">☑ ${esc(t('selectAll'))}</button>
       ${d.writable === false ? '' : `<button class="btn sm" id="fm-newdir">＋ ${esc(t('fmNewFolder'))}</button>`}
       <button class="btn sm primary" id="fm-upload">⬆ ${esc(t('fmUpload'))}</button>
+      ${d.writable === false ? '' : `<button class="btn sm" id="fm-upload-dir">📁 ${esc(t('fmUploadDir'))}</button>`}
       <div class="fm-seg">
         <button id="fm-v-details" class="${FM.view === 'details' ? 'on' : ''}">☰ ${esc(t('fmViewDetails'))}</button>
         <button id="fm-v-thumbs" class="${FM.view === 'thumbs' ? 'on' : ''}">▦ ${esc(t('fmViewThumbs'))}</button>
       </div>
-      ${FM.view === 'thumbs' ? `<div class="fm-sizer">${esc(t('fmThumbSize'))}
-        <input type="range" id="fm-thumb" min="${THUMB_MIN}" max="${THUMB_MAX}" step="10" value="${FM.thumb}"></div>` : ''}
     </div>
     <div class="fm-drop" id="fm-drop">${esc(t('fmDropHint'))}</div>
     <div id="fm-upload-list"></div>
     <div id="fm-list"></div>
     <input type="file" id="fm-file" multiple hidden>
+    <input type="file" id="fm-folder" webkitdirectory directory multiple hidden>
   </div>`;
 
   const host = $('#fm-host'), fi = $('#fm-file'), drop = $('#fm-drop');
@@ -2781,6 +2831,14 @@ function renderFM(){
   });
   $('#fm-upload').onclick = () => fi.click();
   fi.onchange = () => { const l = [...fi.files]; fi.value = ''; if(l.length) uploadFiles(l); };
+  const fdir = $('#fm-folder');
+  if(fdir) fdir.onchange = () => {
+    // webkitdirectory 选出来的文件自带 webkitRelativePath，直接照搬即可保留目录结构
+    const l = [...fdir.files].filter(f => f && (f.webkitRelativePath || f.name));
+    fdir.value = '';
+    if(l.length) uploadFiles(l.map(f => ({ file: f, rel: f.webkitRelativePath || f.name })));
+  };
+  $('#fm-upload-dir')?.addEventListener('click', () => fdir && fdir.click());
   const nd = $('#fm-newdir'); if(nd) nd.onclick = newFolderDialog;
   // 全选 / 全不选（缩略图模式下没有表头复选框，这个按钮是唯一入口 ⇒ 两种模式都要有）
   const selAll = $('#fm-selall');
@@ -2810,10 +2868,19 @@ function renderFM(){
   host.addEventListener('dragenter', hoverOn);
   host.addEventListener('dragover', hoverOn);
   host.addEventListener('dragleave', hoverOff);
-  host.addEventListener('drop', e => {
+  host.addEventListener('drop', async e => {
     hoverOff(e);
     if(!allowed) return;
-    const l = e.dataTransfer && e.dataTransfer.files ? [...e.dataTransfer.files] : [];
+    const dt = e.dataTransfer;
+    // 先试目录遍历（拖进来的文件夹要靠 webkitGetAsEntry 才能取到内容）；
+    // 拿不到条目再退回普通 files —— 普通多选文件走这条路，一个空壳都不会有。
+    if(dt && dt.items && dt.items.length){
+      try{
+        const pairs = await filesFromDataTransfer(dt);
+        if(pairs.length){ uploadFiles(pairs); return; }
+      }catch(err){ /* 遍历失败就当普通文件丢，别把这次投放吞掉 */ }
+    }
+    const l = dt && dt.files ? [...dt.files] : [];
     if(l.length) uploadFiles(l);
   });
   drop.addEventListener('click', () => fi.click());
@@ -3017,14 +3084,57 @@ function newFolderDialog(){
   };
 }
 
-async function uploadFiles(files){
-  const dir = FM.path || '/';
+/** 递归展开 DataTransfer 里的目录条目。
+ *  ⚠️ 拖进来的文件夹在 dataTransfer.files 里只有一个 size=0 的空壳（拿不到内容），
+ *     必须逐个 webkitGetAsEntry() 再 readEntries 才能遍历到真实文件。
+ *     这就是以前"拖文件夹上传 → 得到一堆 0 字节坏文件"的根因。 */
+async function filesFromDataTransfer(dt){
+  const out = [];
+  const items = dt && dt.items ? [...dt.items] : [];
+  const walk = async (entries, prefix) => {
+    for(const raw of entries){
+      const entry = typeof raw.webkitGetAsEntry === 'function' ? raw.webkitGetAsEntry() : raw;
+      if(!entry) continue;
+      if(entry.isFile){
+        const f = await new Promise(res => entry.file(res, () => res(null)));
+        if(f) out.push({ file: f, rel: prefix + f.name });
+      } else if(entry.isDirectory){
+        const reader = entry.createReader();
+        for(;;){
+          const batch = await new Promise(res => reader.readEntries(res, () => res([])));
+          if(!batch.length) break;               // readEntries 必须读到空数组才算这一层扫完
+          await walk(batch, prefix + entry.name + '/');
+        }
+      }
+    }
+  };
+  await walk(items, '');
+  return out;
+}
+
+/**
+ * 上传一批文件/目录。`input` 可以是 File 数组，也可以是 {file, rel} 数组
+ * （rel = 相对当前目录的路径，用于整目录上传时保留子目录结构）。
+ * 服务端会自动补齐 rel 里的中间目录（见 filestore.ts 的 ensureDirChain）。
+ */
+async function uploadFiles(input, baseDir){
+  const base = baseDir || FM.path || '/';
   const listHost = $('#fm-upload-list');
-  for(const file of files){
-    if(file.size > 100 * 1024 * 1024){ toast(t('tooLarge', {name: file.name}), 'err'); continue; }
+  const pairs = (Array.isArray(input) ? input : [input])
+    .map(f => (f && f.file) ? f : { file: f, rel: (f && f.name) || '' });
+  if(!pairs.length) return;
+  let needReload = false;
+  for(const { file, rel } of pairs){
+    if(!file) continue;
+    const name = file.name;
+    if(file.size > 100 * 1024 * 1024){ toast(t('tooLarge', {name}), 'err'); continue; }
+    // 目录上传：目标目录 = 当前目录 + rel 的父路径，文件名只取最后一段
+    const sub = String(rel).split('/').slice(0, -1).join('/');
+    const dir = sub ? (base.replace(/\/+$/,'') + '/' + sub) : base;
+    const shown = rel || name;
     const item = document.createElement('div');
     item.className = 'upload-item glass';
-    item.innerHTML = `${ficon(file.name)}<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(file.name)}</span>
+    item.innerHTML = `${ficon(name)}<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(shown)}">${esc(shown)}</span>
       <div class="prog"><i></i></div><span class="pct">…</span>`;
     if(listHost) listHost.prepend(item);
 
@@ -3051,7 +3161,8 @@ async function uploadFiles(files){
       if(xhr.status === 201){
         if(tx) tx.textContent = t('uploadDone');
         toast(t('uploadOk', {name: file.name}));
-        if(FM.path === dir) loadFiles(dir);   // 只有仍停在该目录时才刷新列表
+        // 注意：整目录上传会落到 base/<子目录>，所以刷新只在"仍停在 base"时进行
+        if(FM.path === base) needReload = true;
       } else {
         if(tx) tx.textContent = t('uploadFailShort');
         toast(t('uploadFail', {name: file.name}), 'err');
@@ -3064,6 +3175,8 @@ async function uploadFiles(files){
     };
     xhr.send(file);
   }
+  // 整目录下传完**只刷一次**，别每个文件刷一遍
+  if(needReload) loadFiles(base);
 }
 
 /* ═══════════ 回收站 ═══════════
