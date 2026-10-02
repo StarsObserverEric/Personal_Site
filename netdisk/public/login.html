@@ -161,6 +161,8 @@ input:focus { border-color: rgba(10,132,255,.75); background: rgba(255,255,255,.
       if (!d || !d.providers || !d.providers.length) return;
       var wrap = $('#oauthwrap');
       var host = $('#oauthbtns');
+      // 服务端已经把按钮直出进来了（更稳，不依赖这次 fetch），前端就别重复渲染
+      if (host && host.children.length) return;
       d.providers.forEach(function (p) {
         var a = document.createElement('a');
         a.className = 'oauth-btn';
