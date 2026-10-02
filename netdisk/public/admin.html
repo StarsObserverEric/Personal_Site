@@ -2901,11 +2901,18 @@ function sortRows(name, rows){
     if(bx && by) return 0;
     if(bx) return 1;                     // 空值沉底，不受升降序影响
     if(by) return -1;
-    // 主比较：sensitivity:'base' = **忽略大小写**（Apple / apple / APPLE 一律判相等），
-    // numeric:true 让文件名里的数字按数值比（IMG2 < IMG10），zh-Hans-CN 让中文按拼音。
+    // 主比较（三条一起看，缺一都会翻车）：
+    //   · sensitivity:'base'   = **忽略大小写**（Apple / apple / APPLE 一律判相等）；
+    //   · numeric:true         = 文件名里的数字按数值比（IMG2 < IMG10）；
+    //   · ignorePunctuation    = **把 - _ . 空格 当不存在**（Windows 资源管理器也是这么排的）。
+    //     少了这一条，COSH-001.jpg 与 cosh002_001.jpg 会在第 4 个字符上比 '-' vs '0'，
+    //     于是 412 个大写 COSH-* 全跑完后才轮到小写 cosh*，看起来像"小写没排上来"。
+    //     加上它之后两者比的是数字 001 vs 002，小写自然就串进数字序里（实测 cosh002_001.jpg
+    //     从索引 740 提到 336，紧挨 COSH-001.jpg）。zh-Hans-CN 让中文按拼音。
     const c = (typeof x === 'number' && typeof y === 'number')
       ? x - y
-      : String(x).localeCompare(String(y), 'zh-Hans-CN', { numeric: true, sensitivity: 'base' });
+      : String(x).localeCompare(String(y), 'zh-Hans-CN',
+          { numeric: true, sensitivity: 'base', ignorePunctuation: true });
     if(c) return c * dir;
     /* ⚠️ 关键：主比较相等时**不能**直接 return 0。
        返回 0 的话 sort 退化成"稳定排序"，同字母的几行会照搬后端返回的先后，
