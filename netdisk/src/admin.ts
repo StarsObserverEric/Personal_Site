@@ -40,6 +40,16 @@ const json = (data: unknown, status = 200) =>
 /** API 错误消息跟随请求语言（浏览器 fetch 自动携带 Accept-Language） */
 const msg = (req: Request, zh: string, en: string) => (pickLang(req) === "zh" ? zh : en);
 
+/**
+ * 缩略图宽度档位（正方形中心裁切）。
+ * 缩略图模式下 .pv 是 80~320 CSS px 的正方形框（object-fit:cover 只显示中心一小块），
+ * 2× 屏最多也就 640 设备像素 —— 所以 768 已经绰绰有余。
+ * ⚠️ 前端 admin.html 里有一份同名常量 THUMB_W，两边必须保持一致。
+ */
+export const THUMB_WIDTHS = [128, 192, 256, 384, 512, 768];
+/** 单张缩略图回传的体积上限（768×768 q72 的 JPEG 一般 ≤120KB，512KB 足够宽松） */
+const THUMB_MAX_UPLOAD = 512 * 1024;
+
 /** 安全解析 JSON body（失败返回空对象） */
 async function readJson<T>(req: Request): Promise<Partial<T>> {
   try {
@@ -578,6 +588,56 @@ export async function handleAdminApi(
     headers.set("x-content-type-options", "nosniff");
     headers.set("content-disposition", `inline; filename*=UTF-8''${encodeURIComponent(f.name)}`);
     return new Response(obj.body as ReadableStream, { headers });
+  }
+
+  // ── 缩略图缓存（浏览器 canvas 裁好的小图，之后预览只读这张小图）──
+  // 为什么需要：缩略图模式原本 <img src="/api/admin/files/:id/raw">，也就是为了在
+  // 160~320px 的方格里显示中心一小块，却把整张原图（常见 4000×3000、甚至 6000×4000
+  // 的几 MB 大图）下载 + 全图解码；一屏几十张直接把标签页卡死、流量也爆。
+  // 做法：浏览器**第一次**显示某张图时，顺手用 canvas 裁一张"中心正方形 + 低分辨率"
+  // 的 JPEG 回传存进存储（POST），之后这个目录再打开就直接读这张几十 KB 的小图
+  // （GET），解码像素少 1~2 个数量级。
+  const thumbMatch = /^\/api\/admin\/thumbs\/([A-Za-z0-9_-]{1,40})$/.exec(path);
+  if (thumbMatch) {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const id = thumbMatch[1];
+    const w = Number(new URL(req.url).searchParams.get("w") || 0);
+    if (!THUMB_WIDTHS.includes(w)) return json({ error: msg(req, "非法的缩略图宽度", "Bad thumb width") }, 400);
+    const key = `thumbs/${id}-${w}.jpg`;
+    const st = await storage(env);
+
+    if (method === "GET") {
+      const o = await st.get(key);
+      if (!o) return json({ error: msg(req, "缩略图尚未生成", "Thumb not ready") }, 404);
+      const h = new Headers();
+      h.set("content-type", "image/jpeg");
+      h.set("cache-control", "private, max-age=31536000, immutable");
+      h.set("x-content-type-options", "nosniff");
+      return new Response(o.body, { headers: h });
+    }
+
+    if (method === "POST") {
+      // 只能给"自己名下（管理员不限）且真实存在"的文件写缩略图，防止拿 id 乱写存储
+      const f = await env.db
+        .prepare("SELECT id, owner FROM files WHERE id = ?1 AND deleted_at IS NULL")
+        .bind(id)
+        .first<{ id: string; owner: string }>();
+      if (!f || (me.role !== "admin" && f.owner !== me.name)) {
+        return json({ error: msg(req, "无权写入该文件的缩略图", "Forbidden") }, 403);
+      }
+      const body = await req.arrayBuffer();
+      if (body.byteLength > THUMB_MAX_UPLOAD) {
+        return json({ error: msg(req, "缩略图体积超限", "Thumb too large") }, 413);
+      }
+      // 魔数校验：必须 JPEG（FF D8 FF），不然后端拿到的可能是任意字节
+      const head = new Uint8Array(body, 0, Math.min(3, body.byteLength));
+      if (!(head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff)) {
+        return json({ error: msg(req, "缩略图只接受 JPEG", "JPEG only") }, 400);
+      }
+      await st.put(key, body, { contentType: "image/jpeg" });
+      return json({ ok: true, id, w, size: body.byteLength });
+    }
   }
 
   // ── 容量统计（概览页容量卡片 + 按用户/按类型两张饼图）──
