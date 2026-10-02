@@ -10,6 +10,7 @@ import {
 } from "./vfs";
 import {
   listDir, makeDir, moveToTrash, listTrash, restoreFromTrash, purgeFromTrash,
+  purgeFiles, purgeDir,
   storageUsage, renameFile, renameDir, moveEntries, listWritableDirs, ensureDirChain,
   HttpError,
 } from "./filestore";
@@ -522,6 +523,38 @@ export async function handleAdminApi(
     const ids = Array.isArray(body.ids) ? body.ids.filter((x) => typeof x === "string") : [];
     if (!ids.length) return json({ error: msg(req, "缺少 ids", "Missing ids") }, 400);
     return withHttpError(async () => json({ ok: true, trashed: await moveToTrash(env, me, { fileIds: ids }) }));
+  }
+
+  // ── 彻底删除文件（不可恢复，连存储对象一起抹掉）──────────────
+  if (path === "/api/admin/files/purge" && method === "DELETE") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const body = await readJson<{ ids?: string[] }>(req);
+    const ids = Array.isArray(body.ids) ? body.ids.filter((x) => typeof x === "string") : [];
+    if (!ids.length) return json({ error: msg(req, "缺少 ids", "Missing ids") }, 400);
+    return withHttpError(async () => {
+      const { purged, keys } = await purgeFiles(env, me, ids);
+      if (keys.length) {
+        const st = await storage(env);
+        ctx.waitUntil(Promise.all(keys.map((k) => st.delete(k).catch(() => {}))).then(() => {}));
+      }
+      return json({ ok: true, purged });
+    });
+  }
+
+  // ── 彻底删除目录（连同子孙，不可恢复）────────────────────
+  if (path === "/api/admin/dirs/purge" && method === "DELETE") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const body = await readJson<{ path?: string }>(req);
+    return withHttpError(async () => {
+      const { purged, keys } = await purgeDir(env, me, body.path ?? "");
+      if (keys.length) {
+        const st = await storage(env);
+        ctx.waitUntil(Promise.all(keys.map((k) => st.delete(k).catch(() => {}))).then(() => {}));
+      }
+      return json({ ok: true, purged });
+    });
   }
 
   // ── 回收站：列表 ──────────────────────────────────
