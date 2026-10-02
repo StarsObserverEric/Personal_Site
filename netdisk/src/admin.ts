@@ -584,9 +584,17 @@ export async function handleAdminApi(
     if (!obj) return json({ error: msg(req, "存储对象不存在", "Object not found") }, 404);
     const headers = new Headers();
     headers.set("content-type", f.mime || "application/octet-stream");
+    // cache-control 不区分 inline/attachment：预览要走 HTTP 缓存，下载也一样吃缓存。
     headers.set("cache-control", "private, max-age=3600");
     headers.set("x-content-type-options", "nosniff");
-    headers.set("content-disposition", `inline; filename*=UTF-8''${encodeURIComponent(f.name)}`);
+    // ?dl=1 ⇒ 存盘下载（附加 attachment）；不带则是 inline 预览（缩略图/相册看大图都要 inline）。
+    const asAttachment = new URL(req.url).searchParams.get("dl") === "1";
+    headers.set(
+      "content-disposition",
+      asAttachment
+        ? `attachment; filename*=UTF-8''${encodeURIComponent(f.name)}`
+        : `inline; filename*=UTF-8''${encodeURIComponent(f.name)}`
+    );
     return new Response(obj.body as ReadableStream, { headers });
   }
 
