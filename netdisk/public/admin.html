@@ -2342,19 +2342,48 @@ const THUMB_MIN = 80, THUMB_MAX = 320;
  * 现在的做法（两阶段）：
  *   1) 优先读 /api/admin/thumbs/{id}?w=… —— 一张几十 KB 的正方形小图，
  *      解码只有目标档位的像素量（默认档位 384² ≈ 15 万像素 vs 原图 1200 万像素）；
+ *      手里有**够清晰**的那档就直接用它，不去碰原图。
  *   2) 小图还没有 ⇒ 回落读原图，但**只在视口附近**才挂 src（远处留空占位），
- *      图一解码完就用 canvas 裁一张"中心正方形 + 低分辨率"的 JPEG 回传给后端存好，
+ *      图一解码完就用 canvas 裁一张"中心正方形 + 当前档位"的 JPEG 回传给后端存好，
  *      成功后把这个 <img> 换成小图（顺手释放大图的解码内存），
- *      并记进 THUMB_SIZE，以后就算重开目录也直接走小图。
+ *      并记进 THUMB_HAVE，以后就算重开目录也直接走小图。
+ *   3) 滑杆拉大 / 列数变少 ⇒ **停稳 500ms** 后补一趟升档（queueThumbUpgrade + scheduleThumbUpgrade）：
+ *      旧档位的小图只能被浏览器拉伸，拉到最大就是一片糊，所以必须重新按新档位裁一张。
+ *      还在显示原图的那些直接用内存里的原图重裁（零额外流量）；
+ *      已经换成小图的重新取一次原图再裁（原图有 1 小时 HTTP 缓存，多数是缓存命中）。
  * ════════════════════════════════════════════════════════════════ */
 /** 小图宽度档位（与后端 admin.ts 的 THUMB_WIDTHS 一致，改一处要两处一起改） */
 const THUMB_W = [128, 192, 256, 384, 512, 768];
 /** 回传小图的体积上限（768² q72 一般 ≤120KB，512KB 足够宽松） */
 const THUMB_MAX_UPLOAD = 512 * 1024;
-/** 会话内已确认"缓存小图存在"的文件 id → 那个档位的宽度（省掉 404 试探；档位变大了也能复用旧的小图） */
-const THUMB_SIZE = new Map();
+/**
+ * 会话内已确认"缓存小图存在"的文件 id → 已经生成过的档位列表（升序）。
+ * 存**列表**而不是单个值是有原因的：滑杆拖小再拖大时能直接命中那张旧档位的小图，
+ * 不必再下一遍原图重裁；反过来"档位不够"也能一眼看出来，触发升档（见 queueThumbUpgrade）。
+ */
+const THUMB_HAVE = new Map();
+/** 已经有的、且不小于 want 的最小档位（一张都没有就返回 0 ⇒ 得走原图） */
+function thumbFit(id, want){
+  const a = (THUMB_HAVE.get(id) || []).filter(w => w >= want);
+  return a.length ? Math.min.apply(null, a) : 0;
+}
+/** 手上最好的那档（可能低于 want）——拖动滑杆时先拿它顶住画面，
+ *  既比"重新挂原图反复解码"便宜得多，也符合"停稳后再换成当前档位"的预期。 */
+function thumbBest(id){
+  const a = THUMB_HAVE.get(id) || [];
+  return a.length ? Math.max.apply(null, a) : 0;
+}
+function thumbMark(id, w){
+  const a = THUMB_HAVE.get(id) || [];
+  if(a.indexOf(w) < 0) THUMB_HAVE.set(id, a.concat(w));
+}
+/** "看得见"判定（视口 ±600px）：升档只管这一圈的图，远处重裁纯属白烧流量 */
+function thumbNear(im){
+  const r = im.getBoundingClientRect();
+  return r.bottom > -600 && r.top < (window.innerHeight + 600);
+}
 const THUMB_PENDING = new Set();
-let thumbIO = null, thumbQ = [], thumbBusy = false, thumbTimer = null;
+let thumbIO = null, thumbQ = [], thumbBusy = false, thumbTimer = null, thumbUpgradeT = null;
 
 /** 小图档位：方框最大 320 CSS px（滑杆上限），2× 屏要 640 设备像素 → 取最接近的档位 */
 function thumbNeed(){
@@ -2373,17 +2402,23 @@ function mountThumbs(){
   if(!imgs.length) return;
   if(!thumbIO){
     thumbIO = new IntersectionObserver(es => {
+      const want = thumbNeed();
       for(const en of es){
         if(!en.isIntersecting) continue;
         thumbIO.unobserve(en.target);
         if(en.target.dataset.mounted) continue;
         en.target.dataset.mounted = '1';
         const id = en.target.dataset.thumb;
-        // 已经有缓存小图就直接用（档位沿用已存的那档，拖大滑杆也不用重新下载一遍）；
-        // 否则回落原图，解码完再裁小图存好。
-        const known = THUMB_SIZE.get(id);
-        en.target.dataset.mode = known ? 'thumb' : 'raw';
-        en.target.src = known ? thumbUrl(id, known) : rawUrl(id);
+        // 已经有缓存小图：够清晰（≥ want）就用它，一字节原图都不碰；
+        // 档位不够（上一趟按 80 生成的 128，现在要 384）就先挂手上最好的那档顶住画面 ——
+        // 直接回头挂原图的话，拖滑杆时每个 60ms 的重建都会重新解码一遍大图，页面立刻卡死；
+        // 随后 scheduleThumbUpgrade 在停稳后换成"当前档位"的清晰小图。
+        const fit = thumbFit(id, want) || thumbBest(id);
+        en.target.dataset.mode = fit ? 'thumb' : 'raw';
+        en.target.dataset.vw = fit || 0;
+        en.target.dataset.w  = fit || want;
+        en.target.src = fit ? thumbUrl(id, fit) : rawUrl(id);
+        if(fit && fit < want) scheduleThumbUpgrade();
       }
     }, { rootMargin: '700px 0px' });
     // load 事件不冒泡，只能挂在捕获阶段（整个页面只挂这一次）
@@ -2399,13 +2434,15 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 /** canvas / fetch 万一不回调也不能把整条队列卡死 —— 超时就按 fallback 处理 */
 const withTimeout = (p, ms, fallback) => Promise.race([Promise.resolve(p), sleep(ms).then(() => fallback)]);
 
-/** 原图解码完了：排队生成小图（一次只做一张，且等页面闲下来再做） */
+/** 原图解码完了：排队生成小图（一次只做一张，且等页面闲下来再做）。
+ *  ⚠️ 这里**不挑 mode**——已经显示旧小图的（dataset.mode === 'thumb'）也要能排队升档，
+ *     那正是"滑杆拉大之后发糊"的根因所在（旧小图只能被浏览器拉伸缩放）。 */
 function queueThumbGen(im, want){
   const id = im.dataset.thumb;
-  if(!id || THUMB_PENDING.has(id) || im.dataset.mode !== 'raw') return;
-  const w = want || +im.dataset.w;
-  // 原图本身就比目标小（比如 800×600 的图裁成 192 就够了），生成了也白费流量
-  if(!im.naturalWidth || im.naturalWidth <= w) return;
+  if(!id || THUMB_PENDING.has(id)) return;
+  const w = want || +im.dataset.w || thumbNeed();
+  // 还显示着原图时，原图本身就比目标小（比如 800×600 的图裁成 192 就够了），生成了也白费流量
+  if(im.dataset.mode === 'raw' && (!im.naturalWidth || im.naturalWidth <= w)) return;
   THUMB_PENDING.add(id);
   im.dataset.w = w;                    // 目标档位改了，后面 genThumb 直接按新档位裁
   thumbQ.push(im);
@@ -2414,22 +2451,39 @@ function queueThumbGen(im, want){
 }
 
 /**
- * 补一趟"升档"扫描：滑杆被拖大之后，已经缓存的小图还是**渲染那一刻**的旧档位
- * （比如先按 150 生成了 192，拖到 320 就要 384，直接拉伸会发虚）。
- * 只对**还在显示原图**的 <img> 下手——它已经解码在内存里了，升档不用再下一遍原图，
- * 几乎零额外流量；已经换成小图的那些要升档就得重新拉原图，不划算，留给下次重排。
+ * 补一趟"升档"扫描：滑杆被拖大 / 列数变少之后，屏幕上显示的小图还是**旧档位**
+ * （比如先按 150 生成了 192，拖到 320 就要 384，直接拉伸就会发虚）。
+ * 两条纪律：
+ *   1) 只扫**视口附近**的图 —— 远处重裁了也看不见，纯烧流量；
+ *   2) 只升不降 —— 缩小的那档浏览器本来就会降采样，看着不糊。
  */
-function queueThumbUpgrade(done){
+function queueThumbUpgrade(seen){
   const want = thumbNeed();
+  const done = seen || new Set();
   for(const im of $$('#fm-list img.timg')){
     const id = im.dataset.thumb;
-    if(!id || im.dataset.mode !== 'raw' || done.has(id)) continue;
-    const known = THUMB_SIZE.get(id) || 0;
-    if(Math.max(known, +im.dataset.w || 0) >= want) continue;
-    if(!im.naturalWidth || im.naturalWidth <= want) continue;
+    if(!id || done.has(id)) continue;
+    const cur = +im.dataset.vw || 0;
+    if(cur >= want) continue;                                          // 已经够清晰
+    if(!thumbNear(im)) continue;                                       // 看不见的不管
+    if(im.dataset.mode === 'raw' && im.naturalWidth && im.naturalWidth <= want) continue;
     done.add(id);
     queueThumbGen(im, want);
   }
+}
+
+/**
+ * 滑杆 / 列数一变，就排一趟"**停稳后**升档"。
+ * 为什么必须抖 500ms：拖动过程中每一帧都在重建整列表（renderFileList 是 60ms 节流），
+ * 边拖边下原图重裁会把页面拖死；手一停住再动手，用户看到的才是"拉大 → 停手 → 立刻变清晰"。
+ */
+function scheduleThumbUpgrade(){
+  clearTimeout(thumbUpgradeT);
+  thumbUpgradeT = setTimeout(() => {
+    thumbUpgradeT = null;
+    queueThumbUpgrade(new Set());
+    drainThumbGen();
+  }, 500);
 }
 
 async function drainThumbGen(){
@@ -2465,19 +2519,46 @@ async function drainThumbGen(){
   }
 }
 
-/** 把一张原图裁成"居中正方形 + 目标分辨率"的 JPEG 回传存进存储 */
+/** 重新拉一遍原图并解码成 ImageBitmap —— 只给"升档"用（旧小图没法放大出清晰版）。
+ *  原图响应带 max-age=3600，同一会话里重开基本都是浏览器缓存命中，不是真走网络。 */
+async function fetchRawBitmap(id){
+  try{
+    const res = await withTimeout(fetch(rawUrl(id), {
+      credentials: 'same-origin', cache: 'force-cache',
+    }), 30000, null);
+    if(!res || !res.ok) return null;
+    const blob = await res.blob();
+    return await withTimeout(createImageBitmap(blob), 20000, null);
+  }catch(e){ return null; }
+}
+
+/** 裁一张"目标档位"的小图回传存进存储；显示中的 <img> 最后换成这张小图。
+ *  ⚠️ mode === 'raw'：屏幕上的原图就是现成采样源，直接裁 ⇒ 零额外流量。
+ *  ⚠️ mode === 'thumb'：说明这张图**已经换成过小图**了（旧档位），只能重新取原图
+ *     再裁一遍。不做这一步，滑杆拉大时用户看到的就是被拉伸的糊图。 */
 async function genThumb(im){
   const id = im.dataset.thumb, w = +im.dataset.w;
-  if(!id || im.dataset.mode !== 'raw' || !im.naturalWidth) return;
-  const blob = await withTimeout(thumbBlob(im, im.naturalWidth, im.naturalHeight, w), 15000, null);
-  if(!blob || blob.size > THUMB_MAX_UPLOAD) return;
-  const ok = await withTimeout(fetch(thumbUrl(id, w), {
-    method: 'POST', headers: { 'content-type': 'image/jpeg' }, body: blob, credentials: 'same-origin',
-  }).then(res => res.ok).catch(() => false), 20000, false);
-  if(!ok) return;
-  THUMB_SIZE.set(id, w);
-  im.dataset.mode = 'thumb';
-  im.src = thumbUrl(id, w);   // 换成小图：省内存，也让"当前这屏"以后都走小图
+  if(!id || !w || !im.naturalWidth) return;
+  let src = im, bmp = null, nw = im.naturalWidth, nh = im.naturalHeight;
+  if(im.dataset.mode !== 'raw'){
+    bmp = await fetchRawBitmap(id);
+    if(!bmp) return;
+    src = bmp; nw = bmp.width; nh = bmp.height;
+  }
+  try{
+    const blob = await withTimeout(thumbBlob(src, nw, nh, w), 15000, null);
+    if(!blob || blob.size > THUMB_MAX_UPLOAD) return;
+    const ok = await withTimeout(fetch(thumbUrl(id, w), {
+      method: 'POST', headers: { 'content-type': 'image/jpeg' }, body: blob, credentials: 'same-origin',
+    }).then(res => res.ok).catch(() => false), 20000, false);
+    if(!ok) return;
+    thumbMark(id, w);
+    im.dataset.mode = 'thumb';       // 先改标记再换 src：换 src 后 img 里就只剩这张小图了
+    im.dataset.vw = w;
+    im.src = thumbUrl(id, w);   // 换成小图：省内存，也让"当前这屏"以后都走小图
+  }finally{
+    if(bmp && bmp.close) bmp.close();
+  }
 }
 
 /** canvas 裁"中心正方形"（与 CSS object-fit:cover 的取景完全一致）+ 缩到目标分辨率 */
@@ -2528,7 +2609,7 @@ async function genThumbOnUpload(id, file){
     const r = await fetch(thumbUrl(id, w), {
       method: 'POST', headers: { 'content-type': 'image/jpeg' }, body: blob, credentials: 'same-origin',
     });
-    if(r.ok) THUMB_SIZE.set(id, w);
+    if(r.ok) thumbMark(id, w);
   }catch(e){ /* 生成失败不影响上传与浏览，下次浏览会再试一次 */ }
 }
 
@@ -2913,7 +2994,8 @@ function syncCols(opts){
   // 用户正在拖滑杆时不回写 —— 否则会跟手指较劲（值被反复覆盖）。
   if(can && !fromSlider && currentTab === 'files' && FM.view === 'thumbs'){
     const s = $('#fm-thumb');
-    if(s){ const v = String(thumbFromCols()); if(s.value !== v){ s.value = v; FM.thumb = +v; } }
+    // 列数变化（± 按钮 / 改窗口宽度 / 点标题复位）会顺手把滑杆挪到对应大小 ⇒ 同样要触发升档
+    if(s){ const v = String(thumbFromCols()); if(s.value !== v){ s.value = v; FM.thumb = +v; scheduleThumbUpgrade(); } }
   }
   return changed;
 }
@@ -3280,6 +3362,8 @@ function renderFM(){
       // 拖动时每 input 都重建整列表，大图会反复解码 → 页面直接卡死，这里节流到 60ms
       clearTimeout(thumbTimerId);
       thumbTimerId = setTimeout(renderFileList, 60);
+      // 拖完停手 500ms，再补一趟升档：把屏幕上的旧档位小图换成"当前滑杆档位"的小图
+      scheduleThumbUpgrade();
     };
   }
 
