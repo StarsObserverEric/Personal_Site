@@ -2431,16 +2431,38 @@ async function genThumb(im){
   im.src = thumbUrl(id, w);   // 换成小图：省内存，也让"当前这屏"以后都走小图
 }
 
-/** canvas 裁中心正方形（与 CSS object-fit:cover 的取景完全一致） */
+/** canvas 裁"中心正方形"（与 CSS object-fit:cover 的取景完全一致）+ 缩到目标分辨率 */
 async function thumbBlob(src, nw, nh, w){
+  const s = Math.min(nw, nh);
+  const sx = (nw - s) / 2, sy = (nh - s) / 2;
+  // 路径一：原生"裁一块 + 直接缩到目标"，浏览器内部走最优采样（比一步 drawImage 快一个量级）
   try{
+    const bmp = await createImageBitmap(src, sx, sy, s, s, {
+      resizeWidth: w, resizeHeight: w, resizeQuality: 'high',
+    });
     const c = document.createElement('canvas');
     c.width = c.height = w;
     const g = c.getContext('2d');
-    if(!g) return null;
+    g.imageSmoothingQuality = 'high';
+    g.drawImage(bmp, 0, 0);
+    if(bmp.close) bmp.close();
+    const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.72));
+    if(blob) return blob;
+  }catch(e){ /* 老浏览器不支持 resize 选项 → 走路径二 */ }
+
+  // 路径二：两步缩。10000px 一步缩到 384 很慢，先降到 ≤1536 再落到目标（经典渐进降采样）
+  try{
+    const mid = Math.min(1536, Math.max(w * 2, 256));
+    const c1 = document.createElement('canvas');
+    c1.width = c1.height = mid;
+    const g1 = c1.getContext('2d');
+    g1.imageSmoothingEnabled = true; g1.imageSmoothingQuality = 'high';
+    g1.drawImage(src, sx, sy, s, s, 0, 0, mid, mid);
+    const c = document.createElement('canvas');
+    c.width = c.height = w;
+    const g = c.getContext('2d');
     g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
-    const s = Math.min(nw, nh);
-    g.drawImage(src, (nw - s) / 2, (nh - s) / 2, s, s, 0, 0, w, w);
+    g.drawImage(c1, 0, 0, mid, mid, 0, 0, w, w);
     return await new Promise(res => c.toBlob(res, 'image/jpeg', 0.72));
   }catch(e){ return null; }
 }
