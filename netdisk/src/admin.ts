@@ -32,6 +32,25 @@ async function storage(env: Env): Promise<StorageProvider> {
   return _storagePromise;
 }
 
+/** 批量抹存储对象：**并发封顶**。
+ *
+ *  之前是一个 `Promise.all(keys.map(k => st.delete(k)))` 全打出去。本地 miniflare
+ *  实测 1600 个对象要 75s；线上更糟 —— Worker 会被拖到 CPU 超时，对象留在 R2 里
+ *  （文件行已经没了、列表里看不见，但配额还在白占）。16 并发是"跑得完又不打爆
+ *  连接预算"的折中：数据库那侧早就提交完了，这里只是收尾。 */
+const R2_DROP_CONCURRENCY = 16;
+async function dropObjects(st: StorageProvider, keys: string[]): Promise<void> {
+  if (!keys.length) return;
+  let i = 0;
+  const lanes = Array.from({ length: Math.min(R2_DROP_CONCURRENCY, keys.length) }, async () => {
+    while (i < keys.length) {
+      const k = keys[i++];
+      try { await st.delete(k); } catch { /* 对象本来就不在也算删成功 */ }
+    }
+  });
+  await Promise.all(lanes);
+}
+
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), {
     status,
@@ -536,7 +555,7 @@ export async function handleAdminApi(
       const { purged, keys } = await purgeFiles(env, me, ids);
       if (keys.length) {
         const st = await storage(env);
-        ctx.waitUntil(Promise.all(keys.map((k) => st.delete(k).catch(() => {}))).then(() => {}));
+        ctx.waitUntil(dropObjects(st, keys));
       }
       return json({ ok: true, purged });
     });
@@ -551,7 +570,7 @@ export async function handleAdminApi(
       const { purged, keys } = await purgeDir(env, me, body.path ?? "");
       if (keys.length) {
         const st = await storage(env);
-        ctx.waitUntil(Promise.all(keys.map((k) => st.delete(k).catch(() => {}))).then(() => {}));
+        ctx.waitUntil(dropObjects(st, keys));
       }
       return json({ ok: true, purged });
     });
@@ -589,7 +608,7 @@ export async function handleAdminApi(
       // 存储对象删除放到后台，不阻塞响应
       if (keys.length) {
         const st = await storage(env);
-        ctx.waitUntil(Promise.all(keys.map((k) => st.delete(k).catch(() => {}))).then(() => {}));
+        ctx.waitUntil(dropObjects(st, keys));
       }
       return json({ ok: true, purged });
     });
