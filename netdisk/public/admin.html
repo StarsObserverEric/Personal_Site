@@ -51,6 +51,9 @@
   --tbl-divider: rgba(255,255,255,.06);
   --tbl-hover: rgba(255,255,255,.05);
   --tbl-row-border: rgba(255,255,255,.07);
+  /* 「定位过去」的高亮底色（暗色：蓝） */
+  --hl-strong: rgba(10,132,255,.38);
+  --hl-soft: rgba(10,132,255,.16);
   --dashed-border: rgba(255,255,255,.22);
   --dropzone-bg: rgba(255,255,255,.025);
   --dropzone-hover-bg: rgba(255,255,255,.06);
@@ -109,6 +112,9 @@
   --tbl-divider: rgba(0,0,0,.06);
   --tbl-hover: rgba(0,0,0,.04);
   --tbl-row-border: rgba(0,0,0,.07);
+  /* 「定位过去」的高亮底色（浅色：绿） */
+  --hl-strong: rgba(16,185,129,.26);
+  --hl-soft: rgba(16,185,129,.11);
   --dashed-border: rgba(0,0,0,.22);
   --dropzone-bg: rgba(0,0,0,.025);
   --dropzone-hover-bg: rgba(0,0,0,.05);
@@ -165,6 +171,9 @@
   --tbl-divider: rgba(0,0,0,.06);
   --tbl-hover: rgba(0,0,0,.04);
   --tbl-row-border: rgba(0,0,0,.07);
+  /* 「定位过去」的高亮底色（浅色：绿） */
+  --hl-strong: rgba(16,185,129,.26);
+  --hl-soft: rgba(16,185,129,.11);
   --dashed-border: rgba(0,0,0,.22);
   --dropzone-bg: rgba(0,0,0,.025);
   --dropzone-hover-bg: rgba(0,0,0,.05);
@@ -593,6 +602,28 @@ a.logo-link::after { content: ""; }
 .tbl .num { font-variant-numeric: tabular-nums; }
 .mono { font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace; font-size: 12.5px; }
 .name-cell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── 存储浏览的辅助排版 ───────────────────
+   文件名一行是真实文件名，下面那行灰字是存储桶里的原始对象 key（R2/S3 的真实身份）。 */
+.stg-nm { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stg-key { font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace; font-size: 11px;
+  color: var(--text-3); opacity: .62; max-width: 320px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+.stg-owner { max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
+.stg-loc { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── 「定位过去」时的高亮（5 秒后由 JS 摘掉 class） ──
+   用 outline + 背景渐变，暗色亮蓝、亮色亮绿，两种主题下都看得清。 */
+@keyframes hlPulse {
+  0%   { background: var(--hl-strong); }
+  55%  { background: var(--hl-strong); }
+  70%  { background: var(--hl-soft); }
+  100% { background: transparent; }
+}
+tr.hl-tmp > td, div.hl-tmp {
+  animation: hlPulse 5s linear forwards;
+  border-radius: 8px;
+}
 .empty { padding: 44px 20px; text-align: center; color: var(--text-3); font-size: 14px; }
 .empty .icon { font-size: 34px; margin-bottom: 10px; opacity: .7; }
 
@@ -796,6 +827,8 @@ a.logo-link::after { content: ""; }
 .tag.expired { background: rgba(255,159,10,.16); color: #fcd34d; }
 .tag.revoked { background: rgba(255,69,58,.16); color: #fda293; }
 .tag.maxed { background: rgba(255,159,10,.16); color: #fcd34d; }
+/* 「登出」专用黄：成功登出用黄色，与成功登录（绿）/失败（红）区分开 */
+.tag.warn { background: rgba(250,204,21,.16); color: #fbbf24; }
 .tag i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 
 /* ── 警示横幅 ─────────────────────────── */
@@ -866,6 +899,10 @@ const I18N = {
     colCountry: '国家', colName: '文件名', colSize: '大小', colShareCount: '分享数', colDownloads: '下载量',
     colUploaded: '上传时间', colActions: '操作', colLink: '链接', colCreated: '创建时间',
     colExpires: '有效期', colStatus: '状态', colReason: '原因', colBannedAt: '封禁时间', colUntil: '到期',
+    // 存储浏览
+    stgUploadTime: '上传时间', stgUploader: '上传用户', stgLocation: '位置',
+    stgGoto: '跳转到「文件」中此文件的位置', stgCopyKey: '复制原始 Key', inTrashShort: '在回收站',
+    stgNote: '存储浏览列出的是存储桶里的原始对象：有数据库记录的会显示真实文件名（下方灰字为原始 Key），上传用户 / 上传时间 / 位置取自文件记录；没有记录的孤儿对象只能显示 Key。',
     // 文件
     dropTitle: '拖拽文件到此处，或点击上传',
     dropDesc: '单文件最大 100 MB（Workers 请求限制）· 直传 R2 对象存储',
@@ -1258,6 +1295,10 @@ const I18N = {
     colCountry: 'Country', colName: 'Name', colSize: 'Size', colShareCount: 'Shares', colDownloads: 'Downloads',
     colUploaded: 'Uploaded', colActions: 'Actions', colLink: 'Link', colCreated: 'Created',
     colExpires: 'Expires', colStatus: 'Status', colReason: 'Reason', colBannedAt: 'Banned at', colUntil: 'Until',
+    // 存储浏览
+    stgUploadTime: 'Uploaded', stgUploader: 'Uploader', stgLocation: 'Location',
+    stgGoto: 'Jump to this file in the Files tab', stgCopyKey: 'Copy raw Key', inTrashShort: 'in trash',
+    stgNote: 'This lists raw objects in the bucket: records with a DB entry show their real file name (grey line = raw Key) plus uploader / upload time / location from the file record; orphan objects have no record and can only show the Key.',
     // 文件
     dropTitle: 'Drop files here or click to upload',
     dropDesc: 'Max 100 MB per file (Workers limit) · Stored directly in R2',
@@ -1685,7 +1726,9 @@ async function api(path, opts={}){
     headers: { ...(opts.body && !(opts.body instanceof FormData) ? {'content-type':'application/json'} : {}), ...(opts.headers||{}) } });
   let data = null;
   try { data = await r.json(); } catch {}
-  if(r.status === 401 && !path.includes('/login')) { showLogin(); throw new Error('unauthorized'); }
+  // 会话过期（401）时回到 /login 完整登录页：本 SPA 内置登录卡片没有 GitHub / OAuth 按钮，
+  // 会话默默过期后会让人以为"GitHub 登录入口消失了"。
+  if(r.status === 401 && !path.includes('/login')) { location.replace('/login'); throw new Error('unauthorized'); }
   if(!r.ok) throw new Error(data?.error || `HTTP ${r.status}`);
   return data;
 }
@@ -2047,7 +2090,13 @@ async function showApp(){
     if (subBtn) switchTab(subBtn.dataset.tab);
   });
 
-  $('#logout-btn').onclick = async () => { await api('/api/admin/logout', {method:'POST'}); showLogin(); };
+  // ⚠️ 退出后直接回 /login 登录页，不要再用本 SPA 内置的登录卡片：
+  //    内置卡片只有"用户名 + 密码"，没有 GitHub / OAuth 按钮 —— 之前表现为
+  //    "登出之后 GitHub 登录按钮就没了"。/login 才是带 OAuth 按钮的完整登录页。
+  $('#logout-btn').onclick = async () => {
+    await api('/api/admin/logout', {method:'POST'}).catch(()=>{});
+    location.replace('/login');
+  };
   $('#traffic-pill').onclick = () => switchTab('settings');
   $('#lang-btn').onclick = toggleLang;
   $('#theme-toggle').onclick = async () => {
@@ -2927,7 +2976,7 @@ function detailsRow(it){
     </tr>`;
   }
   const f = it, vid = isVidFile(f);
-  return `<tr>
+  return `<tr data-fid="${esc(f.id)}">
     <td class="ck"><input type="checkbox" class="fm-ck" data-key="f:${esc(f.id)}" title="${esc(t('selectAll'))}"></td>
     <td><div class="nm">${ficon(f.name)}<span class="tx" title="${esc(f.name)}">${esc(f.name)}</span></div></td>
     <td class="num">${fmtSize(f.size)}</td>
@@ -2988,7 +3037,7 @@ function thumbsHtml(items){
       ? `<img loading="lazy" decoding="async" src="/api/admin/files/${encodeURIComponent(it.id)}/raw" alt="">`
       : `<span class="ph">${vid ? '🎬' : esc((extOf(it.name) || '?').toUpperCase().slice(0, 4))}</span>`;
     const extra = vid ? fmtDur(it.duration_ms) : (it.width ? `${it.width}×${it.height}` : '');
-    return `<div class="thumb" title="${esc(it.name)}">
+    return `<div class="thumb" data-fid="${esc(it.id)}" title="${esc(it.name)}">
       ${ck('f:' + it.id, false)}
       <div class="pv">${pv}</div>
       <div class="mt">
@@ -3203,7 +3252,7 @@ async function loadTrash(){
         <th style="width:150px">${esc(t('colActions'))}</th>
       </tr></thead>
       <tbody>${items.map(it => `
-        <tr>
+        <tr data-fid="${esc(it.id)}">
           <td class="name-cell" title="${esc(it.name)}">${ficon(it.name)} ${esc(it.name)}</td>
           <td class="mono">${esc(it.original_path || '/')}</td>
           <td class="num">${fmtSize(it.size)}</td>
@@ -3422,6 +3471,7 @@ async function loadStorage(){
                 <span style="opacity:.35">·</span>
                 ${bcHtml}
               </div>
+              <div style="font-size:12px;opacity:.45;margin-top:7px;line-height:1.6;max-width:760px">${esc(t('stgNote'))}</div>
             </div>
             <div style="display:flex;gap:8px">
               <button class="btn sm" id="stg-refresh">🔄 ${isZh?'刷新':'Refresh'}</button>
@@ -3435,13 +3485,15 @@ async function loadStorage(){
               <th style="width:36px"><input type="checkbox" id="stg-check-all"></th>
               <th>${esc(t('colName'))}</th>
               <th style="width:120px">${esc(t('colSize'))}</th>
-              <th style="width:170px">${esc(t('colTime'))}</th>
-              <th style="width:140px">${esc(t('colActions'))}</th>
+              <th style="width:170px">${esc(t('stgUploadTime'))}</th>
+              <th style="width:110px">${esc(t('stgUploader'))}</th>
+              <th style="width:200px">${esc(t('stgLocation'))}</th>
+              <th style="width:150px">${esc(t('colActions'))}</th>
             </tr></thead>
             <tbody id="stg-tbody">
       `;
       if (rows.length === 0){
-        html2 += `<tr><td colspan="5" style="text-align:center;padding:48px;opacity:.6">${isZh ? '此目录为空' : 'This directory is empty'}</td></tr>`;
+        html2 += `<tr><td colspan="7" style="text-align:center;padding:48px;opacity:.6">${isZh ? '此目录为空' : 'This directory is empty'}</td></tr>`;
       } else {
         html2 += rows.map(e => {
           const rowKey = esc(e.key);
@@ -3451,17 +3503,33 @@ async function loadStorage(){
               <td><a href="javascript:void(0)" class="stg-dir" data-prefix="${esc(e.key)}" style="text-decoration:none;color:inherit;display:inline-flex;align-items:center;gap:8px">📁 <strong>${esc(e.name.replace(/\/$/, ''))}</strong></a></td>
               <td style="opacity:.35">—</td>
               <td style="opacity:.35">—</td>
+              <td style="opacity:.35">—</td>
+              <td style="opacity:.35">—</td>
               <td></td>
             </tr>`;
           }
-          const icon = ficon(e.name);
-          return `<tr data-key="${rowKey}">
+          // ⚠️ 旧版这里直接显示 R2 对象 key（一串乱码），和"文件"页对不上。
+          //    现在有数据库记录的就显示真实文件名（下面灰字仍可看到原始 key），
+          //    没有记录的孤儿对象才回退成 key —— 这样两个页签看到的都是同一个名字。
+          const rec = e.record || null;
+          const shownName = rec ? rec.name : e.name;
+          const keyTail = e.name;
+          const icon = ficon(shownName);
+          const time = rec && rec.uploaded_at ? rec.uploaded_at : e.lastModified;
+          const loc = rec ? rec.path : '';
+          return `<tr data-key="${rowKey}" data-fid="${esc(rec ? rec.id : '')}">
             <td><input type="checkbox" class="stg-chk"></td>
-            <td style="display:flex;align-items:center;gap:10px">${icon}<span style="font-family:ui-monospace,monospace">${esc(e.name)}</span></td>
+            <td>
+              <div style="display:flex;align-items:center;gap:8px;min-width:0">${icon}<span class="stg-nm" title="${esc(shownName)}">${esc(shownName)}</span></div>
+              <div class="stg-key" title="${esc(e.key)}">${esc(keyTail)}</div>
+            </td>
             <td class="num">${fmtSize(e.size)}</td>
-            <td class="num" style="white-space:nowrap">${e.lastModified ? fmtTime(e.lastModified) : '—'}</td>
+            <td class="num" style="white-space:nowrap">${time ? fmtTime(time) : '—'}${rec && rec.in_trash ? ` <span style="color:#fda293">${esc(t('inTrashShort'))}</span>` : ''}</td>
+            <td class="stg-owner" title="${esc(rec ? rec.owner : '')}">${esc(rec ? rec.owner : '—')}</td>
+            <td class="mono stg-loc" title="${esc(loc)}">${loc ? esc(loc) : '—'}</td>
             <td style="white-space:nowrap">
-              <button class="btn sm" data-copy-key="${rowKey}">${isZh ? '复制Key' : 'Copy Key'}</button>
+              <button class="btn sm" data-goto="${esc(rec ? rec.id : '')}" data-dir="${esc(loc || '')}" data-trash="${rec && rec.in_trash ? '1' : ''}" title="${esc(t('stgGoto'))}" ${rec ? '' : 'disabled style="opacity:.4"'}>📍</button>
+              <button class="btn sm" data-copy-key="${rowKey}" title="${esc(t('stgCopyKey'))}">📋</button>
             </td>
           </tr>`;
         }).join('');
@@ -3497,6 +3565,12 @@ async function loadStorage(){
         b.addEventListener('click', () => copyText(b.dataset.copyKey));
       });
 
+      document.querySelectorAll('[data-goto]').forEach(b => {
+        b.addEventListener('click', () => gotoFileRecord(
+          b.dataset.goto || '', b.dataset.dir || '', b.dataset.trash === '1'
+        ));
+      });
+
       const checkAll = document.getElementById('stg-check-all');
       if (checkAll){
         checkAll.addEventListener('change', () => {
@@ -3528,6 +3602,42 @@ async function loadStorage(){
     }
   }
   render();
+}
+
+/* ═══════════ 存储浏览 → 文件页「定位」 ═══════════
+   点一下 📍：切到「文件」页 → 进到该文件所在目录 → 滚动到它并高亮 5 秒。
+   高亮用临时 class（.hl-tmp），5 秒后自动摘掉，不会污染其它渲染。 */
+async function gotoFileRecord(fileId, dir, inTrash){
+  const zh = LANG === 'zh';
+  const hl = (selector, label) => {
+    const el = document.querySelector(selector);
+    if(!el){
+      toast(zh ? '未找到该条目（可能已被删除）' : 'Item not found (maybe deleted)', 'err');
+      return;
+    }
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    el.classList.remove('hl-tmp');
+    void el.offsetWidth;              // 强制回流，保证同一次点击能重复触发动画
+    el.classList.add('hl-tmp');
+    setTimeout(() => el.classList.remove('hl-tmp'), 5000);
+    if(label) toast(zh ? `已定位到「${label}」` : `Jumped to "${label}"`);
+  };
+
+  if(!fileId){
+    toast(zh ? '该对象没有数据库记录（孤儿对象），无法定位' : 'No DB record for this object', 'err');
+    return;
+  }
+  if(inTrash){
+    switchTab('trash');
+    await loadTrash();
+    hl(`#view [data-fid="${fileId}"]`);
+    return;
+  }
+  switchTab('files');
+  // 详细信息模式才有稳定的表格行（缩略图是卡片，定位同样能滚过去，但行更好认）
+  FM.view = 'details';
+  await loadFiles(dir || FM.start || '/');
+  hl(`#fm-list [data-fid="${fileId}"]`);
 }
 
 /* ═══════════ 分享 ═══════════ */
@@ -3787,8 +3897,12 @@ async function loadSecurity(){
         <tbody>${d.logs.map(l => {
           const actText = actionMap[l.action] || l.action;
           const reasonText = l.reason ? (reasonMap[l.reason] || l.reason) : '—';
+          // 颜色规则：失败（登录失败 / 登出失败 / 限流）一律红；
+          //          成功登录 绿、成功登出 黄。其余配色不动。
+          const actOk = l.result === 'success';
+          const actCls = actOk ? (l.action === 'logout' ? 'warn' : 'active') : 'revoked';
           return `<tr>
-            <td><span class="tag ${l.result === 'success' ? 'active' : 'revoked'}"><i></i>${esc(actText)}</span></td>
+            <td><span class="tag ${actCls}"><i></i>${esc(actText)}</span></td>
             <td class="mono">${esc(l.ip)}</td>
             <td>${esc(l.country || '—')}</td>
             <td>${esc(l.browser)}</td>
@@ -5201,8 +5315,8 @@ function showRecoveryCodes(codes){
     siteTitle = s.site_title || siteTitle;
     showApp();
   }catch{
-    // api() 内部已对 401 调用 showLogin() 并 throw，这里静默兜底即可
-    // 若 api() 因其他错误 throw，也不渲染空页面
+    // 401 已在 api() 里重定向到 /login（带 GitHub 登录按钮的完整登录页）；
+    // 走到这里的是其他错误 —— 也别渲染空页面，至少给个内置登录卡片兜底。
     if (!document.querySelector('#login-view')) showLogin();
   }
 })();
