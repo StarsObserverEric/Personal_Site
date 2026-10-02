@@ -2386,6 +2386,10 @@ function mountThumbs(){
   for(const im of imgs){ if(!im.dataset.mounted) thumbIO.observe(im); }
 }
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+/** canvas / fetch 万一不回调也不能把整条队列卡死 —— 超时就按 fallback 处理 */
+const withTimeout = (p, ms, fallback) => Promise.race([Promise.resolve(p), sleep(ms).then(() => fallback)]);
+
 /** 原图解码完了：排队生成小图（一次只做一张，且等页面闲下来再做） */
 function queueThumbGen(im){
   const id = im.dataset.thumb;
@@ -2397,12 +2401,17 @@ function queueThumbGen(im){
 }
 
 async function drainThumbGen(){
-  if(thumbBusy) return;
+  if(thumbBusy){                       // 上一轮还没干完：重新排一次，别让这批图永远没人管
+    clearTimeout(thumbTimer);
+    thumbTimer = setTimeout(drainThumbGen, 900);
+    return;
+  }
   thumbBusy = true;
   try{
     while(thumbQ.length){
-      try{ await genThumb(thumbQ.shift()); }catch(e){}
-      await new Promise(r => setTimeout(r, 0));   // 让出主线程，别把滚动/拖滑杆卡住
+      const im = thumbQ.shift();
+      try{ await withTimeout(genThumb(im), 30000, null); }catch(e){}
+      await sleep(0);                  // 让出主线程，别把滚动/拖滑杆卡住
     }
   }finally{ thumbBusy = false; }
 }
@@ -2411,12 +2420,12 @@ async function drainThumbGen(){
 async function genThumb(im){
   const id = im.dataset.thumb, w = +im.dataset.w;
   if(!id || im.dataset.mode !== 'raw' || !im.naturalWidth) return;
-  const blob = await thumbBlob(im, im.naturalWidth, im.naturalHeight, w);
+  const blob = await withTimeout(thumbBlob(im, im.naturalWidth, im.naturalHeight, w), 15000, null);
   if(!blob || blob.size > THUMB_MAX_UPLOAD) return;
-  const r = await fetch(thumbUrl(id, w), {
+  const ok = await withTimeout(fetch(thumbUrl(id, w), {
     method: 'POST', headers: { 'content-type': 'image/jpeg' }, body: blob, credentials: 'same-origin',
-  });
-  if(!r.ok) return;
+  }).then(res => res.ok).catch(() => false), 20000, false);
+  if(!ok) return;
   THUMB_SIZE.set(id, w);
   im.dataset.mode = 'thumb';
   im.src = thumbUrl(id, w);   // 换成小图：省内存，也让"当前这屏"以后都走小图
