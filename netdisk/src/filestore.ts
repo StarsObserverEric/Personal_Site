@@ -258,6 +258,31 @@ export async function makeDir(
   return { name, path: full, system: false, owner: me.name };
 }
 
+/** 上传整目录时补齐 path 上的中间目录。
+ *
+ * 为什么需要：upload 只往 files 表插一行（path = 所在目录），**不会**自动建目录，
+ * 而前端上传文件夹时会把文件直接送到 `<当前目录>/子目录/…`。少了中间目录行，
+ * 这些文件在目录树里"悬空"——接口按 path 查得到，用户却点不到那些子文件夹。
+ *
+ * 为什么不复用 makeDir：makeDir 禁止在 '/' 下直接建子项、要求名字合法且不重名；
+ * 这里只是把一条已确定的路径链补上，所以直接 INSERT OR IGNORE 一次扫完所有祖先。
+ */
+export async function ensureDirChain(env: Env, me: Principal, dirInput: string): Promise<void> {
+  const dir = normalizePath(dirInput);
+  if (!dir || dir === "/") return;   // 根本身是虚拟根，不落表
+  if (!canWritePath(me, dir)) throw new HttpError(403, "无权限写入该目录");
+  const parts = dir.split("/").filter(Boolean);
+  const now = Date.now();
+  const stmt = env.db.prepare(
+    "INSERT OR IGNORE INTO directories(path, created_at, owner, system) VALUES(?1, ?2, ?3, 0)"
+  );
+  let acc = "";
+  for (const p of parts) {
+    acc += "/" + p;
+    await stmt.bind(acc, now, me.name).run();
+  }
+}
+
 /* ═══════════ 软删除 → 回收站 ═══════════ */
 
 /**
