@@ -10,7 +10,7 @@ import {
 } from "./vfs";
 import {
   listDir, makeDir, moveToTrash, listTrash, restoreFromTrash, purgeFromTrash,
-  storageUsage, renameFile, renameDir, moveEntries, listWritableDirs,
+  storageUsage, renameFile, renameDir, moveEntries, listWritableDirs, ensureDirChain,
   HttpError,
 } from "./filestore";
 import { pickLang } from "./i18n";
@@ -417,6 +417,13 @@ export async function handleAdminApi(
     }
     if (!dir || !canWritePath(me, dir)) {
       return json({ error: msg(req, "没有权限写入该目录", "No permission to write to this directory") }, 403);
+    }
+    // 整目录上传时 dir 可能是还不存在的新子目录，这里把祖先链补上，
+    // 否则文件落库后父目录缺失、在目录树里点不进去。
+    try {
+      await ensureDirChain(env, me, dir);
+    } catch (e: any) {
+      return json({ error: msg(req, e?.message || "建目录失败", e?.message || "Failed to create directories") }, 403);
     }
     if (!req.body) return json({ error: msg(req, "请求体为空", "Empty request body") }, 400);
     const id = randomId(14);
