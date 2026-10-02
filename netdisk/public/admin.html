@@ -862,6 +862,22 @@ tr.hl-tmp > td, div.hl-tmp {
 .modal .sub { font-size: 13px; color: var(--text-3); margin-bottom: 18px; }
 .modal .actions { display: flex; gap: 10px; margin-top: 20px; }
 .modal .actions .btn { flex: 1; padding: 13px; font-size: 15px; border-radius: 16px; }
+
+/* ── 冷静期：破坏性操作（彻底删除）默认锁 5 秒，旁边走倒计时 ──
+   为什么不用 disabled 直接把整块盖住：用户得看得见"有个更狠的选项在那儿"，
+   否则会以为删除弹窗只有两个键。所以锁的是按键本身 + 一条进度条。 */
+.dl-purge { margin-top: 14px; padding-top: 14px; border-top: 0.5px solid var(--stroke);
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.dl-purge .btn { flex: 1 1 auto; min-width: 180px; padding: 10px 12px; font-size: 13.5px; border-radius: 13px;
+  background: transparent; color: var(--red); border: 1px solid var(--red); box-shadow: none; }
+.dl-purge .btn[disabled] { opacity: .4; }
+.dl-purge .btn:not([disabled]):hover { background: var(--btn-danger-bg-hover); box-shadow: var(--shadow-btn-danger); }
+.dl-cd { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text-3); white-space: nowrap; }
+.dl-bar { flex: 1 1 100%; height: 3px; border-radius: 3px; background: var(--sf-strong); overflow: hidden; }
+.dl-bar > i { display: block; height: 100%; width: 0; border-radius: 3px; background: var(--red); transition: width 1s linear; }
+.dl-bar-row { margin-top: 14px; padding-top: 12px; border-top: 0.5px solid var(--stroke);
+  display: flex; align-items: center; gap: 10px; }
+.dl-bar-row .dl-cd { font-size: 13px; font-weight: 650; color: var(--red); }
 .link-box { display: flex; gap: 8px; margin-top: 4px; }
 .link-box input { flex: 1; padding: 12px 14px; border-radius: 14px; font-size: 14px;
   font-family: ui-monospace, "SF Mono", monospace; color: var(--text);
@@ -1007,6 +1023,14 @@ const I18N = {
     daysLeftN: '{n} 天', restore: '还原', purge: '彻底删除',
     noTrash: '回收站是空的 —— 删除的文件会先放到这里，30 天内都可以还原',
     confirmPurgeT: '彻底删除？', confirmPurgeD: '「{name}」将被永久删除，无法恢复。',
+    // 删除弹窗里的「彻底删除」冷静期（防手滑：默认锁 5 秒）
+    purgeOpt: '🗑️ 彻底删除（不可恢复）', purgeOptHint: '不可恢复 —— 需「确定」后再等 5 秒',
+    purgeCd: '{n} 秒后可点', purgeUnlocked: '已解锁',
+    confirmPurgeNT: '彻底删除这 {n} 项？',
+    confirmPurgeND: '这些项将被永久抹掉：存储对象一起删除，30 天等待期也不再有，无法还原！',
+    confirmPurgeOk: '确定（永久删除）', cancelBack: '取消（回到文件）',
+    purgeDone: '已彻底删除 {n} 项', purgeFail: '彻底删除失败：{msg}',
+    saveSpace: '已彻底删除，存储已释放',
     confirmEmptyTrashT: '清空回收站？', confirmEmptyTrashD: '回收站内所有文件将被永久删除，无法恢复。',
     restoredN: '已还原 {n} 项', purgedN: '已彻底删除 {n} 项', trashedN: '已移入回收站 {n} 项',
     // 容量卡片
@@ -1403,6 +1427,14 @@ const I18N = {
     daysLeftN: '{n} d', restore: 'Restore', purge: 'Delete forever',
     noTrash: 'Trash is empty — deleted files land here and stay restorable for 30 days',
     confirmPurgeT: 'Delete forever?', confirmPurgeD: '"{name}" will be permanently deleted. This cannot be undone.',
+    // Cooldown on the irreversible action in the delete dialog (guards against mis-clicks)
+    purgeOpt: '🗑️ Delete forever (unrecoverable)', purgeOptHint: 'Irreversible — confirm, then wait 5 s',
+    purgeCd: 'clickable in {n}s', purgeUnlocked: 'unlocked',
+    confirmPurgeNT: 'Permanently delete these {n} item(s)?',
+    confirmPurgeND: 'These will be wiped for good: the stored objects go with them, there is no 30-day grace period and no undo.',
+    confirmPurgeOk: 'Confirm (delete forever)', cancelBack: 'Cancel (back to files)',
+    purgeDone: 'Permanently deleted {n} item(s)', purgeFail: 'Purge failed: {msg}',
+    saveSpace: 'Permanently deleted, storage reclaimed',
     confirmEmptyTrashT: 'Empty the trash?', confirmEmptyTrashD: 'All files in the trash will be permanently deleted. This cannot be undone.',
     restoredN: 'Restored {n} item(s)', purgedN: 'Permanently deleted {n} item(s)', trashedN: 'Moved {n} item(s) to trash',
     // Capacity card
@@ -1856,10 +1888,93 @@ const confirmDialog = (title, msg, danger=true) => new Promise(resolve => {
     <div class="actions">
       <button class="btn" data-x>${esc(t('cancel'))}</button>
       <button class="btn ${danger?'danger':'primary'}" data-ok>${esc(t('confirm'))}</button>
-    </div>`);
+    </div>`, () => resolve(false));
   $('[data-ok]').onclick = () => { closeModal(); resolve(true); };
   $('[data-x]').onclick = () => { closeModal(); resolve(false); };
 });
+
+/* ═══════════ 删除弹窗：软删除 / 彻底删除 ═══════════
+ *
+ * 「彻底删除」是不可逆的，所以按用户要求上两道锁：
+ *   ① 弹窗里的「彻底删除」按钮默认灰着，旁边走 5 秒倒计时，倒计时走完才可点；
+ *   ② 点下去还有二次确认，那一次的「确定」同样锁 5 秒；第二次点「取消」直接回文件列表。
+ * 普通的「确定」（移入回收站，30 天内可还原）不设锁，别让常用路径变麻烦。
+ *
+ * deleteDialog → 'soft' | 'purge' | null(取消)
+ * purgeDialog  → true(真的删) | false(取消，什么都不做)
+ */
+const COOLDOWN_SEC = 5;
+
+/** 跑一个 n 秒倒计时；返回 {stop, onUnlock} 手动收尾用 */
+function runCooldown(sec, set, done){
+  let left = sec;
+  const timer = setInterval(() => {
+    left -= 1;
+    if(left <= 0){ clearInterval(timer); done(); return; }
+    set(left);
+  }, 1000);
+  return timer;
+}
+
+function deleteDialog(total){
+  const zh = LANG === 'zh';
+  return new Promise(resolve => {
+    openModal(`
+      <h3>${esc(t('confirmDeleteNT'))}</h3>
+      <div class="sub">${esc(t('confirmDeleteND', { n: total }))}</div>
+      <div class="actions">
+        <button class="btn" data-x>${esc(t('cancel'))}</button>
+        <button class="btn danger" data-ok>${esc(t('confirm'))}</button>
+      </div>
+      <div class="dl-purge">
+        <button class="btn" id="dl-purge" disabled>🗑️ ${esc(t('purgeOpt'))}</button>
+        <span class="dl-cd" id="dl-cd">${esc(t('purgeCd', { n: COOLDOWN_SEC }))}</span>
+        <span class="dl-bar"><i id="dl-bar-i"></i></span>
+      </div>`, () => finish(null));
+    const btn = $('#dl-purge'), cd = $('#dl-cd'), bar = $('#dl-bar-i');
+    let timer = null;
+    // ⚠️ finish 必须顺手 closeModal()：confirmDialog 是在 onclick 里 close 的，
+    // 这里把关闭动作挪进 finish，否则"取消"之后那层弹窗还挂在屏幕上（看着像卡住了）。
+    const finish = (v) => { if(timer) clearInterval(timer); closeModal(); resolve(v); };
+    timer = runCooldown(COOLDOWN_SEC,
+      (n) => { if(cd) cd.textContent = t('purgeCd', { n }); if(bar) bar.style.width = (100 - n * 100 / COOLDOWN_SEC) + '%'; },
+      () => {
+        btn.disabled = false;
+        if(cd) cd.textContent = t('purgeUnlocked');
+        if(bar) bar.style.width = '100%';
+      });
+    $('[data-ok]').onclick = () => finish('soft');
+    $('[data-x]').onclick = () => finish(null);
+    btn.onclick = () => finish('purge');
+  });
+}
+
+function purgeDialog(total){
+  const zh = LANG === 'zh';
+  return new Promise(resolve => {
+    openModal(`
+      <h3>${esc(t('confirmPurgeNT', { n: total }))}</h3>
+      <div class="sub">${esc(t('confirmPurgeND'))}</div>
+      <div class="actions">
+        <button class="btn" data-x>${esc(t('cancelBack'))}</button>
+        <button class="btn danger" data-ok disabled>${esc(t('confirmPurgeOk'))}</button>
+      </div>
+      <div class="dl-bar-row"><span class="dl-cd" id="dl-cd2">${esc(t('purgeCd', { n: COOLDOWN_SEC }))}</span>
+        <span class="dl-bar"><i id="dl-bar-i2"></i></span></div>`, () => finish(false));
+    const cd = $('#dl-cd2'), bar = $('#dl-bar-i2'), ok = $('[data-ok]');
+    let timer = null;
+    const finish = (v) => { if(timer) clearInterval(timer); closeModal(); resolve(v); };
+    timer = runCooldown(COOLDOWN_SEC,
+      (n) => { if(cd) cd.textContent = t('purgeCd', { n }); if(bar) bar.style.width = (100 - n * 100 / COOLDOWN_SEC) + '%'; },
+      () => {
+        ok.disabled = false;
+        if(cd) cd.textContent = t('purgeUnlocked');
+        if(bar) bar.style.width = '100%';
+      });
+    ok.onclick = () => finish(true);
+    $('[data-x]').onclick = () => finish(false);
+  });
+}
 
 function toggleLang(){
   try { localStorage.setItem('cd_lang', LANG === 'zh' ? 'en' : 'zh'); } catch {}
@@ -1867,12 +1982,14 @@ function toggleLang(){
 }
 
 /* ═══════════ 模态框 ═══════════ */
-function openModal(html){
+function openModal(html, onMask){
   closeModal();
   const mask = document.createElement('div');
   mask.className = 'modal-mask'; mask.id = 'modal';
   mask.innerHTML = `<div class="modal">${html}</div>`;
-  mask.addEventListener('click', e => { if(e.target === mask) closeModal(); });
+  // ⚠️ 点遮罩必须同时「关掉」和「把 Promise 收尾」：
+  // 只 closeModal() 不 resolve 的话，await 方会永远挂着 —— 表现就是"点了没反应"。
+  mask.addEventListener('click', e => { if(e.target === mask){ closeModal(); if(onMask) onMask(); } });
   document.body.appendChild(mask);
 }
 function closeModal(){ $('#modal')?.remove(); }
@@ -2950,23 +3067,76 @@ function syncChecks(){
   });
 }
 
+/**
+ * 批量删除（默认：移入回收站）。
+ *
+ * ⚠️ 这里**必须** try/catch：一次删上千项时服务端会花很久，旧代码是
+ *    `await api(...)` 直接往上抛 —— 未捕获的 Promise rejection 只会静默地什么都不做，
+ *    表现就是"点了确认之后没反应"。删完（成功或失败）都要刷新列表，
+ *    否则用户看到的是旧数据，同样像"没删掉"。
+ */
+/** 清选择：FM.sel + 复选框 + 操作条要一起回状态。
+ *  ⚠️ 少了 syncChecks/renderSelBar 的话，行首的勾还亮着、操作条却不出来了，
+ *     用户再点那个勾等于点了个空壳（看着像"点了没反应"）。 */
+function clearSel(){
+  FM.sel.clear();
+  curClear();
+  syncChecks();
+  renderSelBar();
+}
+
 async function batchDelete(){
   const files = selFiles(), dirs = selDirs();
   const total = files.length + dirs.length;
   if(!total) return;
-  if(!(await confirmDialog(t('confirmDeleteNT'), t('confirmDeleteND', { n: total })))) return;
-  let n = 0;
-  if(files.length){
-    const r = await api('/api/admin/files/delete', { method:'POST', body: JSON.stringify({ ids: files }) });
-    n += r.trashed || 0;
-  }
-  for(const p of dirs){
-    const r = await api('/api/admin/dirs/delete', { method:'POST', body: JSON.stringify({ path: p }) });
-    n += r.trashed || 0;
-  }
-  toast(t('trashedN', { n }));
-  FM.sel.clear();
+  const mode = await deleteDialog(total);
+  // 取消也要清选择：留着勾就像"还选着"，用户下次点那个勾是"取消勾选"，看着又像卡住了
+  if(mode === null){ clearSel(); return; }
+  if(mode === 'purge'){ await batchPurge(files, dirs); return; }
+
+  const btn = $('#sel-del');
+  if(btn) btn.disabled = true;
+  let n = 0, err = null;
+  try{
+    if(files.length){
+      const r = await api('/api/admin/files/delete', { method:'POST', body: JSON.stringify({ ids: files }) });
+      n += r.trashed || 0;
+    }
+    for(const p of dirs){
+      const r = await api('/api/admin/dirs/delete', { method:'POST', body: JSON.stringify({ path: p }) });
+      n += r.trashed || 0;
+    }
+  }catch(e){ err = e; }
+  if(btn) btn.disabled = false;
+  clearSel();
+  loadFiles(FM.path);                       // 无论成败都刷：删失败了也要让用户看到还是老样子
+  if(err) toast(err.message || (LANG === 'zh' ? '删除失败' : 'Delete failed'), 'err');
+  else toast(t('trashedN', { n }));
+}
+
+/** 彻底删除：抹掉文件行 + 存储对象，不可恢复。二次确认由 purgeDialog 兜。 */
+async function batchPurge(files, dirs){
+  const total = files.length + dirs.length;
+  // 取消 ⇒ 直接回文件界面，什么都不做（选择也一起清掉，别留半截状态）
+  if(!(await purgeDialog(total))){ clearSel(); return; }
+  const btn = $('#sel-del');
+  if(btn) btn.disabled = true;
+  let n = 0, err = null;
+  try{
+    for(const p of dirs){
+      const r = await api('/api/admin/dirs/purge', { method:'DELETE', body: JSON.stringify({ path: p }) });
+      n += r.purged || 0;
+    }
+    if(files.length){
+      const r = await api('/api/admin/files/purge', { method:'DELETE', body: JSON.stringify({ ids: files }) });
+      n += r.purged || 0;
+    }
+  }catch(e){ err = e; }
+  if(btn) btn.disabled = false;
+  clearSel();
   loadFiles(FM.path);
+  if(err) toast((LANG === 'zh' ? '彻底删除失败：' : 'Purge failed: ') + (err.message || ''), 'err');
+  else toast(t('purgeDone', { n }));
 }
 
 /* ── 移动到… ────────────────────────────────────────
@@ -4131,11 +4301,16 @@ async function loadTrash(){
     toast(t('restoredN', { n: r.restored || 0 }));
     loadTrash();
   });
+  // 回收站里的「彻底删除」：回收站条目本来就在等着被抹掉，没有"再软删一次"这一步，
+  // 所以直接二次确认 + 冷静期（不需要 deleteDialog 那个"移入回收站"的选项）。
   $$('[data-purge]').forEach(b => b.onclick = async () => {
     if(!(await confirmDialog(t('confirmPurgeT'), t('confirmPurgeD', { name: b.dataset.name })))) return;
-    const r = await api('/api/admin/trash', { method: 'DELETE', body: JSON.stringify({ ids: [b.dataset.purge] }) });
-    toast(t('purgedN', { n: r.purged || 0 }));
-    loadTrash();
+    if(!(await purgeDialog(1))) return;
+    try{
+      const r = await api('/api/admin/trash', { method: 'DELETE', body: JSON.stringify({ ids: [b.dataset.purge] }) });
+      toast(t('purgedN', { n: r.purged || 0 }));
+      loadTrash();
+    }catch(e){ toast(e.message, 'err'); loadTrash(); }
   });
 }
 
