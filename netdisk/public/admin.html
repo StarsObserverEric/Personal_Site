@@ -2118,7 +2118,11 @@ const TAB_LOADERS = {
   global: loadGlobal, codes: loadCodes, security: loadSecurity, webdav: loadWebDAV, settings: loadSettings,
 };
 
-function switchTab(tab){
+// ⚠️ opts.skipLoad：调用方自己会去加载数据时必须传 true。
+//    switchTab 内部会隐式跑一次 TAB_LOADERS[tab]()，与调用方的加载**并发**；
+//    谁后返回谁覆盖状态（gotoFileRecord 从"存储浏览"跳过来时被隐式那次
+//    打回根目录，目标文件找不到、高亮也没了 —— 线上实测复现过）。
+function switchTab(tab, opts){
   currentTab = tab;
   openGroup = TAB_TO_GROUP[tab] || tab;
   // 更新侧边栏高亮 & 展开
@@ -2142,6 +2146,7 @@ function switchTab(tab){
   v.innerHTML = '<div class="spin"></div>';
   // 先按新页签算列数（--ui-cols / 顶栏数字 / ± 可用状态），再让 loader 渲染
   syncCols();
+  if (opts && opts.skipLoad) return;
   (TAB_LOADERS[tab] || (() => Promise.resolve()))()
     .then(() => reflowCurrentTab(false))   // 渲染完成后统一分列：卡片页 flowColumns、表格页 splitListTables
     .catch(e => {
@@ -3628,15 +3633,18 @@ async function gotoFileRecord(fileId, dir, inTrash){
     return;
   }
   if(inTrash){
-    switchTab('trash');
+    switchTab('trash', { skipLoad:true });
     await loadTrash();
     hl(`#view [data-fid="${fileId}"]`);
     return;
   }
-  switchTab('files');
   // 详细信息模式才有稳定的表格行（缩略图是卡片，定位同样能滚过去，但行更好认）
   FM.view = 'details';
-  await loadFiles(dir || FM.start || '/');
+  switchTab('files', { skipLoad:true });
+  // ⚠️ 顺序：先把目标目录写进 FM.path，再加载。switchTab 那次隐式加载会带着
+  //    旧路径跑一遍，谁后返回谁覆盖 FM.path —— 不这么写线上会被打回根目录。
+  FM.path = dir || FM.start || '/';
+  await loadFiles(FM.path);
   hl(`#fm-list [data-fid="${fileId}"]`);
 }
 
