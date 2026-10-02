@@ -2347,7 +2347,7 @@ const THUMB_MIN = 80, THUMB_MAX = 320;
  *      图一解码完就用 canvas 裁一张"中心正方形 + 当前档位"的 JPEG 回传给后端存好，
  *      成功后把这个 <img> 换成小图（顺手释放大图的解码内存），
  *      并记进 THUMB_HAVE，以后就算重开目录也直接走小图。
- *   3) 滑杆拉大 / 列数变少 ⇒ **停稳 500ms** 后补一趟升档（queueThumbUpgrade + scheduleThumbUpgrade）：
+ *   3) 滑杆拉大 / 列数变少 ⇒ **停稳 1s**（THUMB_SETTLE_MS）后补一趟升档（queueThumbUpgrade + scheduleThumbUpgrade）：
  *      旧档位的小图只能被浏览器拉伸，拉到最大就是一片糊，所以必须重新按新档位裁一张。
  *      还在显示原图的那些直接用内存里的原图重裁（零额外流量）；
  *      已经换成小图的重新取一次原图再裁（原图有 1 小时 HTTP 缓存，多数是缓存命中）。
@@ -2356,6 +2356,11 @@ const THUMB_MIN = 80, THUMB_MAX = 320;
 const THUMB_W = [128, 192, 256, 384, 512, 768];
 /** 回传小图的体积上限（768² q72 一般 ≤120KB，512KB 足够宽松） */
 const THUMB_MAX_UPLOAD = 512 * 1024;
+/**
+ * 滑杆 / 列数停稳多久才动"升档"这一趟（毫秒）。
+ * 手一松开就数满 1s —— 太早动会在用户还在来回微调时白下一次原图，太晚又变迟钝。
+ */
+const THUMB_SETTLE_MS = 1000;
 /**
  * 会话内已确认"缓存小图存在"的文件 id → 已经生成过的档位列表（升序）。
  * 存**列表**而不是单个值是有原因的：滑杆拖小再拖大时能直接命中那张旧档位的小图，
@@ -2424,7 +2429,13 @@ function mountThumbs(){
     // load 事件不冒泡，只能挂在捕获阶段（整个页面只挂这一次）
     document.addEventListener('load', e => {
       const im = e.target;
-      if(im && im.classList && im.classList.contains('timg')) queueThumbGen(im);
+      if(!im || !im.classList || !im.classList.contains('timg')) return;
+      // 挂载时挂的就是"手上最好的那档小图"（vw === w）：这个 load 是 im.src 换小图触发的，
+      // 再排一次等于把原图重下一遍、重裁一张一模一样的图 —— 拖动滑杆时每挂一张就多几 MB 流量。
+      // 真正要换档一律由 scheduleThumbUpgrade / queueThumbUpgrade 在**停稳后**统一做。
+      // 保底：万一上一次裁图上传失败了（vw 仍停在旧档、w 是目标档），两者不等 ⇒ 仍会重试。
+      if(im.dataset.vw && im.dataset.vw === im.dataset.w) return;
+      queueThumbGen(im);
     }, true);
   }
   for(const im of imgs){ if(!im.dataset.mounted) thumbIO.observe(im); }
@@ -2474,8 +2485,13 @@ function queueThumbUpgrade(seen){
 
 /**
  * 滑杆 / 列数一变，就排一趟"**停稳后**升档"。
- * 为什么必须抖 500ms：拖动过程中每一帧都在重建整列表（renderFileList 是 60ms 节流），
- * 边拖边下原图重裁会把页面拖死；手一停住再动手，用户看到的才是"拉大 → 停手 → 立刻变清晰"。
+ * 为什么必须抖（THUMB_SETTLE_MS = 1000ms，即滑杆停手满 1s 才动手）：
+ * 拖动过程中每一帧都在重建整列表（renderFileList 是 60ms 节流），
+ * 边拖边下原图重裁会把页面拖死；手一停住再动手，用户看到的才是"拉大 → 停手 1s → 变清晰"。
+ * 取 1s 而不是更短的抖动值，是为了躲开"用户还在微调、马上还要再拖一下"的中间态：
+ * 拖到最大往往要来回拉几段，抖太短会在第一段落点上就开工，下一秒又被自己作废，
+ * 白白重下一次几 MB 的原图。每次 scheduleThumbUpgrade 都会清掉上一颗定时器，
+ * 所以只有**最后一次停手**满 1s 才真正升档。
  */
 function scheduleThumbUpgrade(){
   clearTimeout(thumbUpgradeT);
@@ -2483,7 +2499,7 @@ function scheduleThumbUpgrade(){
     thumbUpgradeT = null;
     queueThumbUpgrade(new Set());
     drainThumbGen();
-  }, 500);
+  }, THUMB_SETTLE_MS);
 }
 
 async function drainThumbGen(){
@@ -3362,7 +3378,8 @@ function renderFM(){
       // 拖动时每 input 都重建整列表，大图会反复解码 → 页面直接卡死，这里节流到 60ms
       clearTimeout(thumbTimerId);
       thumbTimerId = setTimeout(renderFileList, 60);
-      // 拖完停手 500ms，再补一趟升档：把屏幕上的旧档位小图换成"当前滑杆档位"的小图
+      // 拖完停手满 1s，再补一趟升档：把屏幕上的旧档位小图换成"当前滑杆档位"的小图。
+      // 每次 oninput 都会把上一颗定时器清掉，所以只有最后一段落手点满 1s 才真正开工。
       scheduleThumbUpgrade();
     };
   }
