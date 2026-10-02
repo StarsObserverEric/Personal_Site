@@ -2439,9 +2439,21 @@ async function drainThumbGen(){
       if(!thumbQ.length) break;
       const im = thumbQ.shift();
       try{ await withTimeout(genThumb(im), 30000, null); }catch(e){}
+      // 做完了（含超时/失败）才把这个 id 从"进行中"里摘掉：失败的那张下次还有机会重试
+      try{ THUMB_PENDING.delete(im.dataset.thumb); }catch(e){}
       await sleep(0);                  // 让出主线程，别把滚动/拖滑杆卡住
     }
-  }finally{ thumbBusy = false; }
+  }finally{
+    thumbBusy = false;
+    // 自愈：收工时队列里还压着任务（典型是最后一张大图"下载完"才入队，这轮已经扫过了），
+    // 一次性 setTimeout 容易接不上，任务就永远停在原图上了。这里再排一轮兜底。
+    // 注意不能直接判 !thumbTimer 就跳过：那个 id 可能是**已经触发过**的陈旧值，
+    // 判出来 false 反而不排 —— 任务照样卡住。统一 clear 掉再排。
+    if(thumbQ.length){
+      clearTimeout(thumbTimer);
+      thumbTimer = setTimeout(() => { thumbTimer = null; drainThumbGen(); }, 500);
+    }
+  }
 }
 
 /** 把一张原图裁成"居中正方形 + 目标分辨率"的 JPEG 回传存进存储 */
