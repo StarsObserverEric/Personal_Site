@@ -128,7 +128,7 @@ async function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Res
     if (path.startsWith("/api/")) {
       return Response.json({ error: "unauthorized" }, { status: 401 });
     }
-    return serveLoginPage();
+    return await serveLoginPage(env);
   }
 
   // 站点图标 —— 未登录也要能取到（登录页、错误页都在用它）
@@ -143,7 +143,7 @@ async function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Res
 
   // 登录页
   if (path === "/login" || path === "/login/") {
-    return serveLoginPage();
+    return await serveLoginPage(env);
   }
 
   // 首页：根据管理员设置决定去向（默认 → /admin；开启后 → /market）
