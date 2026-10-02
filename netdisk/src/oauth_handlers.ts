@@ -79,6 +79,54 @@ async function listEnabledProviders(env: Env): Promise<OAuthProviderRow[]> {
   return rows.results;
 }
 
+/* ═══════════ 登录页的 OAuth 按钮（服务端直出）═══════════
+ * 为什么在服务端渲染：登录页原本靠前端 fetch /oauth/providers 才有 GitHub 按钮，
+ * 一旦那次 fetch 失败（网络抖动 / 插件拦同源请求 / 极端时序）按钮就"凭空消失"，
+ * 用户完全没法用 GitHub 登录。改成服务端直出后，登录页 HTML 里就一定带着按钮。
+ * 前端脚本仍保留一份（老版本页面 / 缓存页面也能工作），但发现容器里已有按钮就跳过。
+ */
+function escapeHtml(s: string): string {
+  return String(s).replace(/[&<>"']/g, (c: string) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" } as Record<string, string>)[c]!
+  );
+}
+
+function providerIcon(type: string): string {
+  if (type !== "github") return "";
+  return '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>';
+}
+
+export interface LoginOAuthButtons {
+  html: string;
+  count: number;
+}
+
+export async function renderLoginOAuthButtons(env: Env): Promise<LoginOAuthButtons> {
+  const empty: LoginOAuthButtons = { html: "", count: 0 };
+  let settings;
+  try {
+    settings = await getSettings(env);
+  } catch {
+    return empty;
+  }
+  if (!settings.oauthEnabled) return empty;
+  let rows: OAuthProviderRow[] = [];
+  try {
+    rows = await listEnabledProviders(env);
+  } catch {
+    return empty;
+  }
+  const buttons = rows
+    .filter((r) => r.client_id)
+    .map((r) => {
+      const p = rowToProvider(r);
+      const label = r.label || p?.name || r.provider_type;
+      const href = `/oauth/start?provider=${encodeURIComponent(r.id)}&redirect=${encodeURIComponent("/login")}`;
+      return `<a class="oauth-btn" href="${escapeHtml(href)}">${providerIcon(r.provider_type)}<span>${escapeHtml("使用 " + label + " 登录")}</span></a>`;
+    });
+  return { html: buttons.join(""), count: buttons.length };
+}
+
 /* ═══════════ GET /oauth/providers —— 分享页用 ═══════════
  * 返回启用中的 Provider 列表（不含敏感信息，只够渲染按钮）。
  * 如果 settings.oauth_enabled=false 则返回空数组。
