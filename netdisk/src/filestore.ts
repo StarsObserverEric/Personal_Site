@@ -406,10 +406,16 @@ export async function moveToTrash(
     if (!canWritePath(me, dir)) throw new HttpError(403, "无权限删除该目录");
 
     const prefix = dir + "/";
-    // 文件表存的是"父目录路径"，所以同一个目标目录对应两种 path：dir 本身 与 dir/（它自己的子目录里）
+    // ⚠️ files.path 存的是**父目录路径**（完整路径 = path + "/" + name），所以要覆盖
+    //    "dir 里的文件"与"dir 的各级子目录里的文件"两类行。范围扫描而不是 LIKE：
+    //    `path >= 'dir/' AND path < 'dir0'` 能走 path 索引（'/'=0x2F < '0'=0x30，
+    //    所有以 dir/ 开头的串都落在这个区间里）；用 LIKE 还得处理目录名里的 _ % 转义。
+    //    区间会顺带捞到 "/admin/_uitestX" 这种同前缀的兄弟目录，下面再按完整路径过滤一次。
     const rows = await env.db
-      .prepare("SELECT id, path, name FROM files WHERE deleted_at IS NULL AND (path = ?1 OR path = ?2)")
-      .bind(dir, prefix)
+      .prepare(
+        "SELECT id, path, name FROM files WHERE deleted_at IS NULL AND (path = ?1 OR (path >= ?2 AND path < ?3))"
+      )
+      .bind(dir, prefix, dir + "0")
       .all<{ id: string; path: string; name: string }>();
     for (const r of rows.results ?? []) {
       const full = r.path === "/" ? `/${r.name}` : `${r.path}/${r.name}`;
@@ -480,11 +486,15 @@ export async function purgeDir(
   if (!canWritePath(me, dir)) throw new HttpError(403, "无权限删除该目录");
 
   const prefix = dir + "/";
+  // 同 moveToTrash：path 存父目录，用前缀区间把各级子目录的行一起捞出来（能走索引）
   const rows = await env.db
-    .prepare("SELECT id, path, name, owner FROM files WHERE path = ?1 OR path = ?2")
-    .bind(dir, prefix)
+    .prepare("SELECT id, path, name, owner FROM files WHERE path = ?1 OR (path >= ?2 AND path < ?3)")
+    .bind(dir, prefix, dir + "0")
     .all<{ id: string; path: string; name: string; owner: string }>();
   const mine = (rows.results ?? []).filter((r) => {
+    // 区间扫描会带进 "/xxx_uitestX" 这类同前缀兄弟目录，按完整路径再卡一道
+    const full = r.path === "/" ? `/${r.name}` : `${r.path}/${r.name}`;
+    if (full !== dir && !full.startsWith(prefix)) return false;
     if (me.role !== "admin" && r.owner !== me.name) return false;
     if (!canWritePath(me, r.path)) return false;
     return true;
