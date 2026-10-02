@@ -401,8 +401,7 @@ export async function moveToTrash(
   for (const dirInput of opts.dirPaths ?? []) {
     const dir = normalizePath(dirInput);
     if (!dir || dir === "/") throw new HttpError(400, "不允许删除根目录");
-    const top = dir.split("/").filter(Boolean)[0] ?? "";
-    if (isSystemDirName(top)) throw new HttpError(403, "系统保留目录不可删除");
+    assertDeletableDir(dir);
     if (!canWritePath(me, dir)) throw new HttpError(403, "无权限删除该目录");
 
     const prefix = dir + "/";
@@ -447,6 +446,23 @@ export async function moveToTrash(
 
 /* ═══════════ 彻底删除（不可恢复） ═══════════ */
 
+/**
+ * 目录能不能被删（软删 / 彻底删除共用）。
+ *
+ * ⚠️ 早先这里写的是 `isSystemDirName(首段)` —— 首段相同就一票否决，于是
+ * "Admin_Private 下的普通子目录"（比如 thumbnail、pic）也删不掉（403），
+ * 而用户真正要删的恰恰就是它。正确规则：只拦**系统根目录本身**
+ * （/public、/Admin_Private、/Recycle_Bin 这三个），它们下面的子目录按正常权限判断
+ * （canWritePath 另有分工：普通用户本来就碰不到 Admin_Private 与 public，
+ * 管理员除 Recycle_Bin 外都能写）。
+ */
+function assertDeletableDir(dir: string): void {
+  const top = dir.split("/").filter(Boolean)[0] ?? "";
+  if (isSystemDirName(top) && dir === "/" + top) {
+    throw new HttpError(403, "系统保留目录不可删除");
+  }
+}
+
 /** 抹掉 rows 指向的文件行（连 shares / direct_links 一起），返回还要删哪些存储对象 */
 async function purgeRows(env: Env, ids: string[]): Promise<string[]> {
   const uniq = [...new Set(ids.filter((x) => typeof x === "string" && x))];
@@ -481,8 +497,7 @@ export async function purgeDir(
 ): Promise<{ purged: number; keys: string[] }> {
   const dir = normalizePath(dirInput);
   if (!dir || dir === "/") throw new HttpError(400, "不允许删除根目录");
-  const top = dir.split("/").filter(Boolean)[0] ?? "";
-  if (isSystemDirName(top)) throw new HttpError(403, "系统保留目录不可删除");
+  assertDeletableDir(dir);
   if (!canWritePath(me, dir)) throw new HttpError(403, "无权限删除该目录");
 
   const prefix = dir + "/";
