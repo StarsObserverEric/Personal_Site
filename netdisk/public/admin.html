@@ -351,6 +351,15 @@ body {
   text-align: left; padding: 8px 9px; color: var(--text-3); font-weight: 600; font-size: 11.5px;
   border-bottom: 1px solid var(--tbl-divider); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* 表头排序（Windows 资源管理器风格）：整格可点，箭头跟在列名后面
+   —— 换算过颜色变量，浅色/深色两套主题都用的是同一批 CSS 变量，不用写两份 */
+th.sortable { cursor: pointer; user-select: none; transition: color .12s, background .12s; }
+th.sortable:hover { color: var(--text); background: var(--tbl-hover); }
+th.sortable:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; border-radius: 6px; }
+th.sortable .ar { font-style: normal; font-size: 9px; margin-left: 4px; opacity: .3; }
+th.sortable.sorted { color: var(--text); }
+th.sortable.sorted .ar { opacity: 1; color: var(--blue); }
+
 .fm-tbl td {
   padding: 9px; border-bottom: 1px solid var(--tbl-divider);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;
@@ -2535,6 +2544,145 @@ function fmSavePrefs(){
   try{ localStorage.setItem('fmView', FM.view); localStorage.setItem('fmThumb', String(FM.thumb)); }catch(e){}
 }
 
+/* ═══════════ 列排序（Windows 资源管理器风格）═══════════
+   点表头 → 按这一列排；再点同一列 → 反向；点别的列 → 换列并用该列默认方向
+   （数值/时间列默认降序：先看到最大/最新，符合直觉；名称列默认升序）。
+
+   约定：
+   · 空值（— / 这列没数据）恒排最后，升降序都一样 —— 否则一堆空行插在正中间最碍眼；
+   · 状态按列表（files / trash / storage）各自存 localStorage，换页签、刷新都还在；
+   · 表头只须写 <th class="sortable" data-sortlist="files" data-sort="size">，
+     点击由下面**一个**全局监听器兜住，以后新增列表只要往 SORT_FMT 里加即可。 */
+const numOf  = v => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+const timeOf = v => { const d = v ? new Date(v).getTime() : NaN; return Number.isFinite(d) ? d : 0; };
+const isBlank = v => v == null || v === '' || v === DASH;
+
+/** 每列怎么取值（返回**可比较**的值：文本列给字符串，数值/时间列给数字；desc 表示默认降序） */
+const SORT_FMT = {
+  /* 文件页：目录与文件混排，目录永远在前（见 renderFileList） */
+  files: {
+    name:     { get: r => String(r.name ?? '') },
+    size:     { get: r => numOf(r.size), desc: 1 },
+    mtime:    { get: r => timeOf(r.mtime || r.uploaded_at), desc: 1 },
+    res:      { get: r => numOf(r.width) * 1e5 + numOf(r.height), desc: 1 },   // 先比宽、同宽比高
+    duration: { get: r => numOf(r.duration_ms), desc: 1 },
+    fps:      { get: r => numOf(r.fps), desc: 1 },
+    vbr:      { get: r => numOf(r.v_bitrate), desc: 1 },
+    abr:      { get: r => numOf(r.a_bitrate), desc: 1 },
+  },
+  /* 回收站 */
+  trash: {
+    name:   { get: r => String(r.name ?? '') },
+    origin: { get: r => String(r.original_path || '') },
+    size:   { get: r => numOf(r.size), desc: 1 },
+    by:     { get: r => String(r.deleted_by || '') },
+    at:     { get: r => timeOf(r.deleted_at), desc: 1 },
+    left:   { get: r => r.days_left == null ? null : numOf(r.days_left) },
+  },
+  /* 存储浏览（目录仍永远在最前，见下面 storage 的 sortRows 调用） */
+  storage: {
+    name:  { get: r => String(r.name ?? '') },
+    size:  { get: r => numOf(r.size), desc: 1 },
+    time:  { get: r => timeOf(r.uploaded_at || r.lastModified), desc: 1 },
+    owner: { get: r => String(r.owner || '') },
+    loc:   { get: r => String(r.path || '') },
+  },
+};
+const SORT_DEFAULT = {
+  files:   { key: 'name', dir: 'asc' },
+  trash:   { key: 'at',   dir: 'desc' },
+  storage: { key: 'name', dir: 'asc' },
+};
+const SORT_STATE = {};        // 列表名 → { key, dir }（内存 + localStorage）
+const SORT_RERENDER = {};     // 列表名 → 排序完怎么重画（各列表渲染时登记）
+const SORT_ROWS = {};         // 列表名 → 已经存好 html 的行数组（只重排、不重新请求）
+const SORT_LABEL = {};        // 列表名 → { 列key: 表头里显示的标题 }（缩略图模式没表头，靠它显示当前排的是哪一列）
+
+function sortLoad(name){
+  try{
+    const v = JSON.parse(localStorage.getItem('fmSort_' + name) || '');
+    if(v && SORT_FMT[name] && SORT_FMT[name][v.key])
+      SORT_STATE[name] = { key: v.key, dir: v.dir === 'desc' ? 'desc' : 'asc' };
+    else SORT_STATE[name] = Object.assign({}, SORT_DEFAULT[name]);
+  }catch(e){ SORT_STATE[name] = Object.assign({}, SORT_DEFAULT[name]); }
+}
+function sortSave(name){
+  try{ localStorage.setItem('fmSort_' + name, JSON.stringify(SORT_STATE[name])); }catch(e){}
+}
+/** 按当前列/方向排一份副本（不动原数组） */
+function sortRows(name, rows){
+  const st = SORT_STATE[name], f = (SORT_FMT[name] || {})[st.key];
+  if(!f || !rows || rows.length < 2) return rows || [];
+  const dir = st.dir === 'desc' ? -1 : 1;
+  return rows.slice().sort((a, b) => {
+    const x = f.get(a), y = f.get(b);
+    const bx = isBlank(x), by = isBlank(y);
+    if(bx && by) return 0;
+    if(bx) return 1;                     // 空值沉底，不受升降序影响
+    if(by) return -1;
+    const c = (typeof x === 'number' && typeof y === 'number')
+      ? x - y
+      : String(x).localeCompare(String(y), 'zh-Hans-CN', { numeric: true, sensitivity: 'base' });
+    return c ? c * dir : 0;
+  });
+}
+/** 可点击排序的表头单元格（整格可点，Tab 能聚焦、Enter/空格也能切） */
+function sortTh(name, key, label, width){
+  const st = SORT_STATE[name], on = st.key === key;
+  (SORT_LABEL[name] = SORT_LABEL[name] || {})[key] = label;   // 记下来给缩略图模式的"当前排序"按钮用
+  const tip = on ? (st.dir === 'asc' ? '升序 ▲｜点击改为降序' : '降序 ▼｜点击改为升序') : '点击按此列排序';
+  return `<th class="sortable${on ? ' sorted' : ''}" data-sortlist="${name}" data-sort="${key}"
+    tabindex="0" style="width:${width}" title="${esc(label + '｜' + tip)}"><span>${esc(label)}</span>${
+      on ? `<i class="ar">${st.dir === 'asc' ? '▲' : '▼'}</i>` : ''}</th>`;
+}
+/** 把当前状态刷到页面上所有表头（列表重画之后调用，保证箭头和状态一致） */
+function syncSortArrows(){
+  $$('th.sortable[data-sortlist]').forEach(th => {
+    const st = SORT_STATE[th.dataset.sortlist], on = st && st.key === th.dataset.sort;
+    th.classList.toggle('sorted', !!on);
+    let ar = th.querySelector('.ar');
+    if(on){
+      if(!ar){ ar = document.createElement('i'); ar.className = 'ar'; th.appendChild(ar); }
+      ar.textContent = st.dir === 'asc' ? '▲' : '▼';
+    }else if(ar){ ar.remove(); }
+  });
+}
+/** 缩略图模式没有表头可点，用这个按钮把"当前按什么排"显示出来，
+ *  点它就是切回详细信息视图（到那边点表头才改得了排序）。 */
+function fmSortNote(){
+  const st = SORT_STATE.files, lb = (SORT_LABEL.files || {})[st.key] || t('colName');
+  return `<button class="btn sm" id="fm-sort-note" title="${esc(lb + '（点击切回详细信息改排序）')}">⇅ ${esc(lb)} ${st.dir === 'asc' ? '↑' : '↓'}</button>`;
+}
+function applySort(th){
+  const name = th.dataset.sortlist, key = th.dataset.sort, map = SORT_FMT[name];
+  if(!map || !map[key]) return;
+  const st = SORT_STATE[name];
+  if(st.key === key) st.dir = st.dir === 'asc' ? 'desc' : 'asc';
+  else { st.key = key; st.dir = map[key].desc ? 'desc' : 'asc'; }
+  sortSave(name);
+  syncSortArrows();
+  try{ (SORT_RERENDER[name] || (() => {}))(); }catch(e){ console.warn('排序后重画失败', e); }
+}
+// ⚠️ 一个监听器兜住所有列表：以后新增可排序列/列表都不用再写绑定
+document.addEventListener('click', e => {
+  const th = e.target && e.target.closest ? e.target.closest('th.sortable[data-sort][data-sortlist]') : null;
+  if(!th || e.target.closest('input, button, a, label')) return;
+  applySort(th);
+});
+document.addEventListener('keydown', e => {
+  if(e.key !== 'Enter' && e.key !== ' ') return;
+  const th = e.target && e.target.closest ? e.target.closest('th.sortable[data-sort][data-sortlist]') : null;
+  if(!th) return;
+  e.preventDefault();
+  applySort(th);
+});
+
+['files', 'trash', 'storage'].forEach(sortLoad);
+// 排序之后怎么重画：文件列表直接重画（不重新请求，数据还在 FM.data 里）；
+// 回收站整块重画（动作按钮很多，重画最稳）；存储浏览只重排本地已加载的行（见 render() 里的注册）。
+SORT_RERENDER.files = () => renderFileList();
+SORT_RERENDER.trash = () => loadTrash();
+
 const DASH = '—';
 function fmtRes(f){ return (f.width && f.height) ? `${f.width}×${f.height}` : DASH; }
 function fmtDur(ms){
@@ -3067,6 +3215,7 @@ function renderFM(){
       ${FM.view === 'thumbs' ? `<div class="fm-sizer">${esc(t('fmThumbSize'))}
         <input type="range" id="fm-thumb" min="${THUMB_MIN}" max="${THUMB_MAX}" step="10" value="${FM.thumb}"></div>` : ''}
       <button class="btn sm" id="fm-selall">☑ ${esc(t('selectAll'))}</button>
+      ${FM.view === 'thumbs' ? fmSortNote() : ''}
       ${d.writable === false ? '' : `<button class="btn sm" id="fm-newdir">＋ ${esc(t('fmNewFolder'))}</button>`}
       <button class="btn sm primary" id="fm-upload">⬆ ${esc(t('fmUpload'))}</button>
       ${d.writable === false ? '' : `<button class="btn sm" id="fm-upload-dir">📁 ${esc(t('fmUploadDir'))}</button>`}
@@ -3117,6 +3266,9 @@ function renderFM(){
   //    于是一张卡片撑满一行、整页变成九张通栏大图（每张还在下原图，拖动直接卡死）。
   $('#fm-v-details').onclick = () => { FM.view = 'details'; fmSavePrefs(); renderFM(); applyCols(); };
   $('#fm-v-thumbs').onclick  = () => { FM.view = 'thumbs';  fmSavePrefs(); renderFM(); applyCols(); };
+  // 缩略图模式没有表头，"当前排序"按钮点了直接回详细信息（与切视图是同一个动作）
+  const sortNote = $('#fm-sort-note');
+  if(sortNote) sortNote.onclick = () => { FM.view = 'details'; fmSavePrefs(); renderFM(); applyCols(); };
   const th = $('#fm-thumb');
   if(th){
     let thumbTimerId = null;
@@ -3171,9 +3323,12 @@ function splitColumns(items, n){
 function renderFileList(){
   const d = FM.data, host = $('#fm-list');
   if(!d || !host) return;
-  const items = [];
-  for(const x of (d.dirs  || [])) items.push({ isDir: true,  ...x });
-  for(const x of (d.files || [])) items.push({ isDir: false, ...x });
+  // ⚠️ 目录与文件**分别**排序再拼：目录恒在最前、且始终按名字排（Windows 也是这样分组），
+  //    混在一个数组里排会把文件夹插到文件中间去。
+  const items = [
+    ...sortRows('files', (d.dirs  || []).map(x => ({ isDir: true,  ...x }))),
+    ...sortRows('files', (d.files || []).map(x => ({ isDir: false, ...x }))),
+  ];
   if(!items.length){
     host.innerHTML = `<div class="empty"><div class="icon">📂</div>${esc(t('fmEmptyDir'))}</div>`;
     return;
@@ -3221,18 +3376,17 @@ function detailsHtml(items){
   const n = Math.max(1, COL.eff);
   // 列宽按"8 个媒体列 + 名称"实测调过：单列表 ~840px 时仍能完整显示 3840×2160 与 31.4 Mbps。
   // 每个表头都带 title：万一列被压窄，鼠标悬停还能看到完整列名。
-  const th = (w, key) => `<th style="width:${w}" title="${esc(t(key))}">${esc(t(key))}</th>`;
   const head = `<tr>
       <th class="ck"><input type="checkbox" class="fm-all" title="${esc(t('selectAll'))}"></th>
-      <th style="width:28%" title="${esc(t('colName'))}">${esc(t('colName'))}</th>
-      ${th('66px','colSize')}
-      ${th('116px','colModified')}
-      ${th('100px','colResolution')}
-      ${th('74px','colDuration')}
-      ${th('52px','colFps')}
-      ${th('94px','colVBitrate')}
-      ${th('94px','colABitrate')}
-      ${th('108px','colActions')}
+      ${sortTh('files','name',t('colName'),'28%')}
+      ${sortTh('files','size',t('colSize'),'66px')}
+      ${sortTh('files','mtime',t('colModified'),'116px')}
+      ${sortTh('files','res',t('colResolution'),'100px')}
+      ${sortTh('files','duration',t('colDuration'),'74px')}
+      ${sortTh('files','fps',t('colFps'),'52px')}
+      ${sortTh('files','vbr',t('colVBitrate'),'94px')}
+      ${sortTh('files','abr',t('colABitrate'),'94px')}
+      <th style="width:108px" title="${esc(t('colActions'))}">${esc(t('colActions'))}</th>
     </tr>`;
   return `<div class="fmc">${splitColumns(items, n).map(col => `
     <div class="fcol"><table class="fm-tbl">
@@ -3461,7 +3615,7 @@ async function uploadFiles(input, baseDir){
    可见性由服务端按身份过滤：管理员看全部，普通用户只看自己删的。 */
 async function loadTrash(){
   const d = await api('/api/admin/trash');
-  const items = d.items || [];
+  const items = sortRows('trash', d.items || []);   // ⚠️ 必须在渲染前排，否则表头箭头和行序对不上
   $('#view').innerHTML = `
   <div class="glass section">
     <div class="section-title">
@@ -3474,8 +3628,12 @@ async function loadTrash(){
     ${items.length ? `
     <div style="overflow-x:auto"><table class="tbl">
       <thead><tr>
-        <th>${esc(t('colName'))}</th><th>${esc(t('colOrigin'))}</th><th>${esc(t('colSize'))}</th>
-        <th>${esc(t('colDeletedBy'))}</th><th>${esc(t('colDeletedAt'))}</th><th>${esc(t('colDaysLeft'))}</th>
+        ${sortTh('trash','name',t('colName'),'')}
+        ${sortTh('trash','origin',t('colOrigin'),'')}
+        ${sortTh('trash','size',t('colSize'),'')}
+        ${sortTh('trash','by',t('colDeletedBy'),'')}
+        ${sortTh('trash','at',t('colDeletedAt'),'')}
+        ${sortTh('trash','left',t('colDaysLeft'),'')}
         <th style="width:150px">${esc(t('colActions'))}</th>
       </tr></thead>
       <tbody>${items.map(it => `
@@ -3683,10 +3841,11 @@ async function loadStorage(){
         return `<a href="javascript:void(0)" data-prefix="${esc(part.prefix)}" class="stg-bc" style="color:var(--blue);text-decoration:none;font-family:ui-monospace,monospace">${label}</a>`;
       }).join('<span style="opacity:.35;margin:0 6px">/</span>');
 
-      const rows = [...(r.entries ?? [])].sort((a,b)=>{
-        if(a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-        return a.name.localeCompare(b.name);
-      });
+      // 目录永远在最前（和"文件"页一致），其余按当前排序状态；
+      // ⚠️ 只排本地已加载的这一页，分页加载更多后仍是"当前这页内部排序"。
+      const allRows = [...(r.entries ?? [])];
+      const rows = sortRows('storage', allRows.filter(x => x.isDir))
+        .concat(sortRows('storage', allRows.filter(x => !x.isDir)));
 
       let html2 = `
         <div class="glass group" style="padding:18px 22px">
@@ -3710,11 +3869,11 @@ async function loadStorage(){
           <table class="tbl" style="margin:0">
             <thead><tr>
               <th style="width:36px"><input type="checkbox" id="stg-check-all"></th>
-              <th>${esc(t('colName'))}</th>
-              <th style="width:120px">${esc(t('colSize'))}</th>
-              <th style="width:170px">${esc(t('stgUploadTime'))}</th>
-              <th style="width:110px">${esc(t('stgUploader'))}</th>
-              <th style="width:200px">${esc(t('stgLocation'))}</th>
+              ${sortTh('storage','name',t('colName'),'')}
+              ${sortTh('storage','size',t('colSize'),'120px')}
+              ${sortTh('storage','time',t('stgUploadTime'),'170px')}
+              ${sortTh('storage','owner',t('stgUploader'),'110px')}
+              ${sortTh('storage','loc',t('stgLocation'),'200px')}
               <th style="width:150px">${esc(t('colActions'))}</th>
             </tr></thead>
             <tbody id="stg-tbody">
@@ -3725,7 +3884,7 @@ async function loadStorage(){
         html2 += rows.map(e => {
           const rowKey = esc(e.key);
           if (e.isDir){
-            return `<tr data-key="${rowKey}">
+            return e.__html = `<tr data-key="${rowKey}">
               <td></td>
               <td><a href="javascript:void(0)" class="stg-dir" data-prefix="${esc(e.key)}" style="text-decoration:none;color:inherit;display:inline-flex;align-items:center;gap:8px">📁 <strong>${esc(e.name.replace(/\/$/, ''))}</strong></a></td>
               <td style="opacity:.35">—</td>
@@ -3744,7 +3903,7 @@ async function loadStorage(){
           const icon = ficon(shownName);
           const time = rec && rec.uploaded_at ? rec.uploaded_at : e.lastModified;
           const loc = rec ? rec.path : '';
-          return `<tr data-key="${rowKey}" data-fid="${esc(rec ? rec.id : '')}">
+          return e.__html = `<tr data-key="${rowKey}" data-fid="${esc(rec ? rec.id : '')}">
             <td><input type="checkbox" class="stg-chk"></td>
             <td>
               <div style="display:flex;align-items:center;gap:8px;min-width:0">${icon}<span class="stg-nm" title="${esc(shownName)}">${esc(shownName)}</span></div>
@@ -3761,6 +3920,17 @@ async function loadStorage(){
           </tr>`;
         }).join('');
       }
+      // 登记"点表头怎么重排"：把这一页各行已经拼好的 html 存下来，
+      // 点排序表头时只重排 innerHTML，不重新请求接口、也不闪一下 spinner。
+      SORT_ROWS.storage = rows;
+      SORT_RERENDER.storage = () => {
+        const tb = document.getElementById('stg-tbody');
+        if(!tb || !rows.length) return;
+        tb.innerHTML = sortRows('storage', rows.filter(x => x.isDir))
+          .concat(sortRows('storage', rows.filter(x => !x.isDir)))
+          .map(x => x.__html || '').join('');
+      };
+
       html2 += `</tbody></table>
         </div>
         ${r.truncated ? `<div style="text-align:center;padding:14px"><button class="btn" id="stg-load-more">${isZh ? '加载更多…' : 'Load more…'}</button></div>` : ''}
