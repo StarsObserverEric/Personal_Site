@@ -676,6 +676,68 @@ tr.hl-tmp > td, div.hl-tmp {
 .btn.sm { padding: 7px 12px; font-size: 12.5px; border-radius: 11px; box-shadow: none; }
 .btn.sm:hover { box-shadow: var(--shadow-btn-plain-hover); }
 .btn[disabled] { opacity: .4; pointer-events: none; }
+/* 下载按钮（用户明确要求：放在「移动到…」左边、绿色） */
+.btn.ok {
+  background: linear-gradient(180deg,#3ddc84,#1fb573); border-color: transparent; color: #06251a;
+  box-shadow: 0 4px 14px rgba(31,181,115,.3);
+}
+.btn.ok:hover { filter: brightness(1.06); box-shadow: 0 6px 18px rgba(31,181,115,.4); transform: translateY(-1px); }
+.btn.ok:active { transform: translateY(0) scale(.97); }
+/* 选中了文件夹时置灰：浏览器根本下不了目录，给个灰键比点了没反应强 */
+.btn.ok[disabled] { background: var(--sf-strong); color: var(--text-3); box-shadow: none; filter: none; }
+
+/* ── 条目光标（点一下先高亮，空格 / Enter / 双击才打开预览）───────────
+   和复选框"已选"是两回事：复选框 = 批量操作的范围，光标 = 我现在指着哪一行。 */
+.thumb.cur { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(10,132,255,.5); }
+.fm-tbl tr.cur > td, .tbl tr.cur > td { background: rgba(10,132,255,.16) !important; }
+.fm-tbl tr.cur:hover > td, .tbl tr.cur:hover > td { background: rgba(10,132,255,.22) !important; }
+
+/* ── 图片预览（像手机相册一样全屏）─────────────────────────────── */
+#lb {
+  position: fixed; inset: 0; z-index: 400;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+  animation: lbIn .2s ease-out;
+}
+#lb.lb-out { animation: lbOut .16s ease-in forwards; }
+/* 背景先压暗、再一路压到纯黑（用户明确要的"背景压低亮度一直到黑色"） */
+#lb .lb-bg {
+  position: absolute; inset: 0; background: #000; cursor: zoom-out;
+  animation: lbBg .28s ease-out forwards;
+}
+@keyframes lbBg { from { background: rgba(0,0,0,.3); } to { background: #000; } }
+@keyframes lbIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes lbOut { to { opacity: 0; } }
+/* ⚠️ 这里刻意**不加** max-width/max-height：布局尺寸必须等于原图真实尺寸，
+   否则"双击 1:1"会被 CSS 缩成"铺满屏幕"（4200px 的图永远显示不出真实像素）。
+   初始缩放由 JS 算 fit = min(1, 视口/原图)，铺不满屏幕就是 1:1 起步。 */
+#lb .lb-img {
+  position: absolute; left: 50%; top: 50%;
+  transform-origin: 50% 50%; will-change: transform; user-select: none;
+  -webkit-user-drag: none; cursor: grab; box-shadow: 0 24px 80px rgba(0,0,0,.75);
+}
+/* 原图还在路上时：拿手头那张小图当模糊底衬（相册里那股"先糊后清"的观感） */
+#lb .lb-ph {
+  position: absolute; inset: 0; opacity: .85; transform: scale(1.06); filter: blur(26px);
+  background-repeat: no-repeat; background-position: center; background-size: contain;
+}
+#lb .lb-img.drag { cursor: grabbing; }
+#lb .lb-spin {
+  position: absolute; z-index: 2; width: 44px; height: 44px; border-radius: 50%;
+  border: 3px solid rgba(255,255,255,.22); border-top-color: #fff;
+  animation: lbSpin .8s linear infinite;
+}
+@keyframes lbSpin { to { transform: rotate(360deg); } }
+#lb .lb-tip {
+  position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 3;
+  color: rgba(255,255,255,.55); font-size: 12px; white-space: nowrap; pointer-events: none;
+}
+#lb .lb-bar {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; padding: 26px 20px 12px;
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  color: rgba(255,255,255,.75); font-size: 12.5px; pointer-events: none;
+  background: linear-gradient(180deg, rgba(0,0,0,0), rgba(0,0,0,.75));
+}
+#lb .lb-bar .nm { font-weight: 650; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60vw; }
 
 /* ── 上传区 ───────────────────────────── */
 .dropzone {
@@ -2774,6 +2836,33 @@ document.addEventListener('keydown', e => {
   applySort(th);
 });
 
+/* ── 全局快捷键 ────────────────────────────────────────
+   Esc  = 退一层：开着预览先关预览；否则清掉选中（顶掉"取消选择"按钮）；再否则去掉光标。
+   空格/Enter = 打开光标所在那张图；预览开着时它们改成"关闭预览"。
+   ⚠️ 输入框里、表头排序、以及任何弹窗开着的时候都不抢键。 */
+document.addEventListener('keydown', e => {
+  const el = e.target;
+  const tn = (el && el.tagName || '').toLowerCase();
+  if(tn === 'input' || tn === 'textarea' || tn === 'select' || (el && el.isContentEditable)) return;
+  if(el && el.closest && el.closest('th.sortable')) return;
+  if(document.getElementById('modal')) return;
+  if(e.key === 'Escape'){
+    e.preventDefault();
+    if(LB && LB.open){ lbClose(); return; }
+    if(FM.sel.size){ FM.sel.clear(); syncChecks(); renderSelBar(); curClear(); return; }
+    if(CUR.fid) curClear();
+    return;
+  }
+  if(e.key !== ' ' && e.key !== 'Enter') return;
+  e.preventDefault();
+  if(LB && LB.open){ lbClose(); return; }
+  if(!CUR.fid) return;
+  const p = curCanPreview();
+  if(p) openPreview(p.id, CUR.list);
+  else if(PIX[CUR.list || 'files'] && PIX[CUR.list][CUR.fid])
+    toast(LANG === 'zh' ? '只能预览图片文件（视频请用播放器打开）' : 'Only images can be previewed', 'err');
+});
+
 ['files', 'trash', 'storage'].forEach(sortLoad);
 // 排序之后怎么重画：文件列表直接重画（不重新请求，数据还在 FM.data 里）；
 // 回收站整块重画（动作按钮很多，重画最稳）；存储浏览只重排本地已加载的行（见 render() 里的注册）。
@@ -2825,13 +2914,24 @@ function renderSelBar(){
   if(!host) return;
   const n = FM.sel.size;
   if(!n){ host.innerHTML = ''; return; }
+  // 选了目录就下载不了（浏览器不支持下载目录）⇒ 按钮置灰，比点了没反应强
+  const nf = selFiles().length, nd = selDirs().length;
+  const zh = LANG === 'zh';
+  // ⚠️ 只要选中里**有目录**（哪怕同时勾了文件）就置灰：浏览器下载不了目录，
+  //    与其让用户点了才发现少了东西，不如一开始就告诉他"把目录的勾去掉"。
+  const dlOff = !nf || nd > 0;
+  const dlTip = dlOff
+    ? (nd ? (zh ? '有目录被选中，浏览器无法下载目录——请取消勾选目录' : 'A folder is selected and folders cannot be downloaded — deselect it')
+          : (zh ? '先勾选至少一个文件' : 'Select at least one file first'))
+    : (zh ? '下载所选文件' : 'Download selected files');
   host.innerHTML = `<div class="fm-sel">
     <span>${esc(t('selectedN', { n }))}</span>
+    <button class="btn sm ok" id="sel-dl" ${dlOff ? 'disabled' : ''} title="${esc(dlTip)}">⬇ ${esc(zh ? '下载' : 'Download')}</button>
     <button class="btn sm" id="sel-move">${esc(t('moveTo'))}</button>
     <button class="btn sm danger" id="sel-del">${esc(t('del'))}</button>
-    <button class="btn sm" id="sel-clear">${esc(t('clearSel'))}</button>
   </div>`;
-  $('#sel-clear').onclick = () => { FM.sel.clear(); syncChecks(); renderSelBar(); };
+  // ⚠️ 没有"取消选择"按钮了：Esc 就是它的等价动作（见底部全局 keydown）
+  $('#sel-dl').onclick = () => doDownload(selFiles());
   $('#sel-del').onclick = batchDelete;
   $('#sel-move').onclick = () => moveDialog(selFiles(), selDirs());
 }
@@ -3424,6 +3524,8 @@ function splitColumns(items, n){
 function renderFileList(){
   const d = FM.data, host = $('#fm-list');
   if(!d || !host) return;
+  // 登记预览索引：点开大图 / 下载都要按 id 反查"这东西是不是图片、叫什么名字"
+  pixIndex('files', (d.files || []).concat(d.dirs || []));
   // ⚠️ 目录与文件**分别**排序再拼：目录恒在最前、且始终按名字排（Windows 也是这样分组），
   //    混在一个数组里排会把文件夹插到文件中间去。
   const items = [
@@ -3586,6 +3688,243 @@ function bindRowActions(){
   $$('[data-share]').forEach(b => b.onclick = e => { e.stopPropagation(); openShareModal(b.dataset.share); });
 }
 
+/* ═══════════ 预览索引（每个列表的 id → 条目）═══════════
+   「文件 / 存储浏览 / 回收站」三处都要能点开看大图，预览前得知道某一行
+   到底是图片还是视频、叫什么、多大。三处各自在渲染时往这里登记一份。 */
+const PIX = { files: {}, trash: {}, storage: {} };
+function pixIndex(list, rows){
+  const bag = (PIX[list] = PIX[list] || {});
+  for(const r of (rows || [])) if(r && r.id) bag[r.id] = r;
+}
+
+/* ═══════════ 条目光标（Windows 资源管理器里的那个"当前项"）═══════════
+   点一下条目 → 一圈蓝边（光标）；再点别的 → 光标跟过去。
+   光标**独立于复选框多选**：复选框决定"批量操作管哪些"，光标决定"我现在指着哪个"。
+   空格 / Enter / 双击 = 打开光标所指的那张图；Esc = 关掉光标（也就取消选择）。 */
+const CUR = { list: null, fid: null };
+const curEsc = s => { try { return CSS.escape(s); } catch(e){ return String(s).replace(/["\\]/g, '\\$&'); } };
+function curOf(node){
+  if(!node || !node.closest) return null;
+  if(node.closest('#stg-tbody')) return 'storage';
+  if(node.closest('#fm-list')) return 'files';
+  return 'trash';
+}
+function curSet(list, fid){ CUR.list = list; CUR.fid = fid; curPaint(); }
+function curClear(){ CUR.list = null; CUR.fid = null; curPaint(); }
+function curEl(){
+  if(!CUR.fid) return null;
+  let root = document;
+  if(CUR.list === 'trash') root = $('#view') || document;
+  else if(CUR.list === 'storage') root = $('#stg-tbody') || document;
+  return root ? root.querySelector(`[data-fid="${curEsc(CUR.fid)}"]`) : null;
+}
+function curPaint(){
+  $$('.cur').forEach(el => el.classList.remove('cur'));
+  if(!CUR.fid) return;
+  const el = curEl();
+  if(!el){ CUR.list = null; CUR.fid = null; return; }   // 列表重画后这项没了，光标自动失效
+  el.classList.add('cur');
+}
+/** 光标所指的条目是不是图片（不是就提示，别静默没反应） */
+function curCanPreview(){
+  const bag = PIX[CUR.list || 'files'] || {};
+  const meta = bag[CUR.fid];
+  if(!meta) return null;
+  return isImgFile(meta) ? { meta, id: CUR.fid } : null;
+}
+
+document.addEventListener('click', e => {
+  const box = e.target && e.target.closest ? e.target.closest('[data-fid]') : null;
+  if(!box) return;
+  if(e.target.closest('input, button, a, label, th.sortable')) return;
+  curSet(curOf(box), box.dataset.fid);
+}, true);   // 捕获阶段：早于行内的 onclick，保证光标一定被设置上
+
+document.addEventListener('dblclick', e => {
+  const box = e.target && e.target.closest ? e.target.closest('[data-fid]') : null;
+  if(!box) return;
+  if(e.target.closest('input, button, a, label')) return;
+  curSet(curOf(box), box.dataset.fid);
+  openPreview(box.dataset.fid, curOf(box));
+});
+
+/* ═══════════ 图片预览（全屏相册式）═══════════
+   滚轮 = 以鼠标为中心缩放；双击 = 1:1；拖 = 平移；
+   点画面外的黑色区域 / Esc / 空格 = 关闭。缩放时用 transform 做，
+   不重排、不重新请求 —— 原图只下一次，之后全靠本地缓存。 */
+const LB_MAX = 12, LB_MIN = 0.1;
+let LB = null;
+
+function lbEl(tag, cls){ const el = document.createElement(tag); if(cls) el.className = cls; return el; }
+
+function openPreview(id, list){
+  const bag = PIX[list || 'files'] || {};
+  const meta = bag[id];
+  if(!meta){ toast(LANG === 'zh' ? '找不到这个条目' : 'Item not found', 'err'); return; }
+  if(!isImgFile(meta)){
+    toast(LANG === 'zh' ? '只能预览图片文件（视频请用播放器打开）' : 'Only image files can be previewed', 'err');
+    return;
+  }
+  if(LB && LB.open){ lbClose(); }
+
+  const bg    = lbEl('div', 'lb-bg');
+  const spin  = lbEl('div', 'lb-spin');
+  const img   = lbEl('img', 'lb-img'); img.alt = meta.name || ''; img.draggable = false;
+  // 先估一下原图真实尺寸（列表里就有 width/height），布局框先按它排，缩放才有基准
+  img.width = meta.width || 0; img.height = meta.height || 0;
+  const tip   = lbEl('div', 'lb-tip');
+  tip.textContent = LANG === 'zh'
+    ? '滚轮缩放 · 双击 1:1 · 拖动查看 · 点画面外 / Esc / 空格 关闭'
+    : 'Wheel zoom · dblclick 1:1 · drag · click outside / Esc / space to close';
+  const bar = lbEl('div', 'lb-bar');
+  const nm = lbEl('div', 'nm'); nm.textContent = meta.name || id;
+  const sub = lbEl('div', 'sub');
+  sub.textContent = (meta.size ? fmtSize(meta.size) : '')
+    + (meta.width && meta.height ? ' · ' + meta.width + '×' + meta.height : '');
+  bar.appendChild(nm); bar.appendChild(sub);
+
+  const wrap = lbEl('div'); wrap.id = 'lb';
+  // 手头已有的小图当模糊底衬（相册那股"先糊后清"），原图到了就把它摘掉 —— 大图也能秒开
+  const have = (typeof THUMB_HAVE !== 'undefined') ? (THUMB_HAVE.get(id) || []) : [];
+  const ph = lbEl('div', 'lb-ph');
+  if(have.length) ph.style.backgroundImage = 'url("' + thumbUrl(id, Math.max.apply(null, have)) + '")';
+  wrap.appendChild(bg); wrap.appendChild(ph); wrap.appendChild(spin); wrap.appendChild(img); wrap.appendChild(tip); wrap.appendChild(bar);
+  document.body.appendChild(wrap);
+  LB = {
+    open: true, id, list: list || 'files', name: meta.name || id,
+    k: 1, tx: 0, ty: 0, el: wrap, img, bg, spin, ph,
+    nw: meta.width || 0, nh: meta.height || 0, fit: 1,
+  };
+  // 布局框先按列表里记的原图尺寸排好：fit 一算就得准，缩放才有稳定基准
+  img.width = LB.nw || 0; img.height = LB.nh || 0;
+  if(LB.nw && LB.nh){ LB.fit = lbFit(); LB.k = LB.fit; }
+  lbPaint();
+
+  const full = new Image();
+  let done = false;
+  full.onload = () => {
+    if(!LB || LB.id !== id || done) return;
+    done = true;
+    LB.nw = full.naturalWidth; LB.nh = full.naturalHeight;
+    LB.fit = lbFit();
+    img.width = LB.nw; img.height = LB.nh;
+    img.src = full.src;
+    if(ph.parentNode) ph.remove();      // 原图到了，模糊底衬退场
+    spin.remove();
+    lbPaint();
+  };
+  full.onerror = () => { if(LB && LB.id === id) spin.remove(); };
+  full.src = rawUrl(id);
+  lbBind();
+}
+
+function lbClose(){
+  if(!LB || !LB.open) return;
+  const el = LB.el, bg = LB.bg;
+  LB.open = false;
+  bg.style.animation = 'none';   // 关掉时别再跑"压暗"动画，直接黑着淡出
+  bg.style.background = '#000';
+  el.classList.add('lb-out');
+  setTimeout(() => { el.remove(); }, 170);
+  lbDragOff();
+  LB = null;
+}
+
+/** 把 {k, tx, ty} 落到 transform 上。位图居中靠 translate(-50%,-50%)，缩放绕元素中心。 */
+function lbPaint(){
+  if(!LB) return;
+  LB.img.style.transform = `translate(-50%,-50%) translate(${LB.tx}px,${LB.ty}px) scale(${LB.k})`;
+}
+/** 布局尺寸 = 原图真实像素（CSS 没加 max-width 约束），所以 offsetWidth 就是 nw。 */
+function lbDims(){
+  if(!LB) return { w: 0, h: 0 };
+  return { w: LB.nw || LB.img.offsetWidth || 0, h: LB.nh || LB.img.offsetHeight || 0 };
+}
+/** "整图刚好铺满屏幕"的比例；原图本来就比屏幕小 ⇒ 1（此时 1:1 起步，不能再缩小） */
+function lbFit(){
+  const d = lbDims();
+  if(!d.w || !d.h) return 1;
+  return Math.min(1, window.innerWidth / d.w, window.innerHeight / d.h);
+}
+/** 以屏幕点 (px,py) 为锚点缩放：缩放前后锚点下的那一个"图内点"保持不动 */
+function lbZoomAt(px, py, k2){
+  if(!LB) return;
+  const w = lbDims().w, h = lbDims().h;
+  const cx = window.innerWidth / 2 + LB.tx + (LB.k - 1) * w / 2;
+  const cy = window.innerHeight / 2 + LB.ty + (LB.k - 1) * h / 2;
+  const v = { x: (px - cx) / LB.k, y: (py - cy) / LB.k };   // 锚点下的"图内点"
+  // 下限 = fit（最多缩到"整图刚好铺满"，再缩就只剩一个点，没有意义）
+  const k = Math.max(LB.fit, Math.min(LB_MAX, k2));
+  const cx2 = px - k * v.x, cy2 = py - k * v.y;             // 缩放后该点仍落在锚上
+  LB.k = k;
+  LB.tx = cx2 - window.innerWidth / 2 - (k - 1) * w / 2;
+  LB.ty = cy2 - window.innerHeight / 2 - (k - 1) * h / 2;
+  lbPaint();
+}
+/** 双击：一刀切到 1:1（把双击的那一点顶到画面正中）；已经 1:1 了再双击就回到"整图铺满" */
+function lbOneToOne(px, py){
+  if(!LB) return;
+  const w = lbDims().w, h = lbDims().h;
+  const cx = window.innerWidth / 2 + LB.tx + (LB.k - 1) * w / 2;
+  const cy = window.innerHeight / 2 + LB.ty + (LB.k - 1) * h / 2;
+  const vx = (px - cx) / LB.k, vy = (py - cy) / LB.k;
+  const target = LB.k < 0.995 ? 1 : LB.fit;                 // < 1:1 ⇒ 去 1:1；已经是 ⇒ 回铺满
+  LB.k = target;
+  LB.tx = -target * vx; LB.ty = -target * vy;               // k=1 时中心 = 容器中心 + 位移 ⇒ 位移取 -v
+  void w; void h; void cy;
+  lbPaint();
+}
+
+function lbBind(){
+  const img = LB.img;
+  img.addEventListener('wheel', e => {
+    e.preventDefault();
+    const f = e.deltaY < 0 ? 1.14 : 1 / 1.14;
+    lbZoomAt(e.clientX, e.clientY, LB.k * f);
+  }, { passive: false });
+  LB.bg.addEventListener('click', () => lbClose());
+  img.addEventListener('dblclick', e => { e.preventDefault(); lbOneToOne(e.clientX, e.clientY); });
+  // 拖动平移（超过 4px 才算拖动，否则当成点击，别抢 dblclick）
+  let dragging = false, moved = 0, sx = 0, sy = 0;
+  img.addEventListener('pointerdown', e => {
+    dragging = true; moved = 0; sx = e.clientX; sy = e.clientY;
+    img.classList.add('drag');
+    try{ img.setPointerCapture(e.pointerId); }catch(err){}
+  });
+  img.addEventListener('pointermove', e => {
+    if(!dragging) return;
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    moved = Math.max(moved, Math.abs(dx) + Math.abs(dy));
+    if(moved > 4){ LB.tx += dx; LB.ty += dy; sx = e.clientX; sy = e.clientY; lbPaint(); }
+  });
+  const up = () => { dragging = false; img.classList.remove('drag'); };
+  img.addEventListener('pointerup', up);
+  img.addEventListener('pointercancel', up);
+  img.addEventListener('click', e => {
+    if(moved > 4) e.stopPropagation();        // 刚拖完别当成点背景
+  });
+}
+function lbDragOff(){ /* 占位：LB 已置 null，事件随 DOM 一起移除 */ }
+
+/* ═══════════ 下载（全局文件管理）═══════════
+   权限在服务端：/api/admin/files/{id}/raw 只放"管理员任意文件 / 普通用户自己名下"过。
+   这里只负责把一次或多次下载"触发"出来 —— 目录选不下（浏览器不支持），
+   所以只要有目录被选中，按钮就是灰的。 */
+function doDownload(ids){
+  if(!ids || !ids.length) return;
+  ids.forEach((id, i) => setTimeout(() => {
+    const bag = PIX.files || {};
+    const a = document.createElement('a');
+    a.href = `/api/admin/files/${encodeURIComponent(id)}/raw?dl=1`;
+    a.download = (bag[id] && bag[id].name) || id;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }, i * 180));
+  toast(LANG === 'zh' ? `开始下载 ${ids.length} 个文件…` : `Downloading ${ids.length} file(s)…`);
+}
+
 function newFolderDialog(){
   openModal(`
     <h3>${esc(t('fmNewFolder'))}</h3>
@@ -3717,6 +4056,7 @@ async function uploadFiles(input, baseDir){
 async function loadTrash(){
   const d = await api('/api/admin/trash');
   const items = sortRows('trash', d.items || []);   // ⚠️ 必须在渲染前排，否则表头箭头和行序对不上
+  pixIndex('trash', d.items || []);                 // 回收站里也要能点开看大图
   $('#view').innerHTML = `
   <div class="glass section">
     <div class="section-title">
@@ -3962,6 +4302,7 @@ async function loadStorage(){
             </div>
             <div style="display:flex;gap:8px">
               <button class="btn sm" id="stg-refresh">🔄 ${isZh?'刷新':'Refresh'}</button>
+              <button class="btn sm ok" id="stg-dl-sel" disabled>${isZh ? '⬇ 下载选中' : '⬇ Download'}</button>
               <button class="btn sm danger" id="stg-delete-sel">🗑️ ${isZh ? '删除选中' : 'Delete Selected'}</button>
             </div>
           </div>
@@ -3982,6 +4323,7 @@ async function loadStorage(){
       if (rows.length === 0){
         html2 += `<tr><td colspan="7" style="text-align:center;padding:48px;opacity:.6">${isZh ? '此目录为空' : 'This directory is empty'}</td></tr>`;
       } else {
+        const recList = [];   // 有数据库记录的那些对象 ⇒ 可预览 / 可下载
         html2 += rows.map(e => {
           const rowKey = esc(e.key);
           if (e.isDir){
@@ -3999,6 +4341,7 @@ async function loadStorage(){
           //    现在有数据库记录的就显示真实文件名（下面灰字仍可看到原始 key），
           //    没有记录的孤儿对象才回退成 key —— 这样两个页签看到的都是同一个名字。
           const rec = e.record || null;
+          if(rec) recList.push(rec);
           const shownName = rec ? rec.name : e.name;
           const keyTail = e.name;
           const icon = ficon(shownName);
@@ -4020,6 +4363,7 @@ async function loadStorage(){
             </td>
           </tr>`;
         }).join('');
+        pixIndex('storage', recList);
       }
       // 登记"点表头怎么重排"：把这一页各行已经拼好的 html 存下来，
       // 点排序表头时只重排 innerHTML，不重新请求接口、也不闪一下 spinner。
@@ -4070,11 +4414,24 @@ async function loadStorage(){
       });
 
       const checkAll = document.getElementById('stg-check-all');
+      const dlSel = document.getElementById('stg-dl-sel');
+      // 存储浏览只能勾选到文件行（目录行的复选框列是空的）⇒ "有勾选 = 能下载"
+      const syncStgDl = () => {
+        const n = document.querySelectorAll('.stg-chk:checked').length;
+        if(dlSel) dlSel.disabled = n === 0;
+      };
       if (checkAll){
         checkAll.addEventListener('change', () => {
           document.querySelectorAll('.stg-chk').forEach(c => c.checked = checkAll.checked);
+          syncStgDl();
         });
       }
+      document.querySelectorAll('.stg-chk').forEach(c => c.addEventListener('change', syncStgDl));
+      dlSel?.addEventListener('click', () => {
+        const ids = [...document.querySelectorAll('.stg-chk:checked')]
+          .map(c => c.closest('tr')?.dataset.fid).filter(Boolean);
+        doDownload(ids);
+      });
 
       document.getElementById('stg-delete-sel')?.addEventListener('click', async () => {
         const keys = [...document.querySelectorAll('.stg-chk:checked')].map(c => c.closest('tr')?.dataset.key).filter(Boolean);
