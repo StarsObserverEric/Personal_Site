@@ -2391,13 +2391,36 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const withTimeout = (p, ms, fallback) => Promise.race([Promise.resolve(p), sleep(ms).then(() => fallback)]);
 
 /** 原图解码完了：排队生成小图（一次只做一张，且等页面闲下来再做） */
-function queueThumbGen(im){
+function queueThumbGen(im, want){
   const id = im.dataset.thumb;
   if(!id || THUMB_PENDING.has(id) || im.dataset.mode !== 'raw') return;
-  if(!im.naturalWidth || im.naturalWidth <= +im.dataset.w) return;   // 原图本来就比目标小，不用生成
-  THUMB_PENDING.add(id); thumbQ.push(im);
+  const w = want || +im.dataset.w;
+  // 原图本身就比目标小（比如 800×600 的图裁成 192 就够了），生成了也白费流量
+  if(!im.naturalWidth || im.naturalWidth <= w) return;
+  THUMB_PENDING.add(id);
+  im.dataset.w = w;                    // 目标档位改了，后面 genThumb 直接按新档位裁
+  thumbQ.push(im);
   clearTimeout(thumbTimer);
   thumbTimer = setTimeout(drainThumbGen, 700);
+}
+
+/**
+ * 补一趟"升档"扫描：滑杆被拖大之后，已经缓存的小图还是**渲染那一刻**的旧档位
+ * （比如先按 150 生成了 192，拖到 320 就要 384，直接拉伸会发虚）。
+ * 只对**还在显示原图**的 <img> 下手——它已经解码在内存里了，升档不用再下一遍原图，
+ * 几乎零额外流量；已经换成小图的那些要升档就得重新拉原图，不划算，留给下次重排。
+ */
+function queueThumbUpgrade(done){
+  const want = thumbNeed();
+  for(const im of $$('#fm-list img.timg')){
+    const id = im.dataset.thumb;
+    if(!id || im.dataset.mode !== 'raw' || done.has(id)) continue;
+    const known = THUMB_SIZE.get(id) || 0;
+    if(Math.max(known, +im.dataset.w || 0) >= want) continue;
+    if(!im.naturalWidth || im.naturalWidth <= want) continue;
+    done.add(id);
+    queueThumbGen(im, want);
+  }
 }
 
 async function drainThumbGen(){
@@ -2408,7 +2431,12 @@ async function drainThumbGen(){
   }
   thumbBusy = true;
   try{
-    while(thumbQ.length){
+    // 最多转 4 圈：每圈先补一趟升档扫描，再把排到的做掉（滑杆连续拖动时可能连着要升档）
+    const done = new Set();
+    let rounds = 0;
+    while(rounds++ < 4){
+      queueThumbUpgrade(done);
+      if(!thumbQ.length) break;
       const im = thumbQ.shift();
       try{ await withTimeout(genThumb(im), 30000, null); }catch(e){}
       await sleep(0);                  // 让出主线程，别把滚动/拖滑杆卡住
