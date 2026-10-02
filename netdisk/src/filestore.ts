@@ -283,7 +283,97 @@ export async function ensureDirChain(env: Env, me: Principal, dirInput: string):
   }
 }
 
+/* ═══════════ 批量写的分片工具 ═══════════
+ *
+ * 为什么必须有这一层（2026-10-02 踩坑）：
+ *   「删除 2680 项」曾经点了没反应 —— 前端等的是一个**永远不会回来**的响应。
+ *   病根有两个，都是"一次做太多"：
+ *     ① db.batch() 一次提交上千条语句会直接炸（实测 150 条 OK、1600 条 500）；
+ *     ② 每条语句一个 round-trip（原来"按 id 查文件"是 for 循环逐条 SELECT），
+ *        2680 条就是 2680 次往返，光等 D1 就烧掉大半墙钟预算。
+ * ⇒ 任何"几十个以上"的批量写都走：切片 + IN(?,?,…) 批次取 + 有并发上限的批量写。
+ *   请求时间的硬预算是 Workers 墙钟（Cloudflare 按 30s 量级兜），所以这里宁可多跑几趟。
+ */
+const BATCH_CHUNK = 90;        // 单批语句数 / 单批 IN 占位符数
+const BATCH_PARALLEL = 3;      // 同批并发趟数（无脑全并发会打爆 D1 连接预算）
+
+function chunkArr<T>(arr: T[], n: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+  return out;
+}
+
+/** 有并发上限的 map（保序）。全并发会把 D1 的并发预算打满，串行又太慢。 */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (it: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    for (;;) {
+      const i = cursor++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i]);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+/** 把 n 条语句切成多批并发提交 —— 大目录批量删除的唯一入口 */
+async function batchChunks(
+  env: Env,
+  stmts: { q: string; b: unknown[] }[],
+  chunk = BATCH_CHUNK
+): Promise<void> {
+  const groups = chunkArr(stmts, chunk);
+  await mapLimit(groups, BATCH_PARALLEL, async (grp) => {
+    await env.db.batch(grp.map((s) => env.db.prepare(s.q).bind(...s.b)));
+  });
+}
+
+/** 按 id 批量取行（一条 IN 替代 N 次 round-trip） */
+async function selectByIds<T>(
+  env: Env,
+  ids: string[],
+  sql: string,
+  extraWhere = ""
+): Promise<T[]> {
+  const groups = chunkArr(ids, BATCH_CHUNK);
+  const res = await mapLimit(groups, BATCH_PARALLEL, async (grp) => {
+    const ph = grp.map(() => "?").join(",");
+    const r = await env.db
+      .prepare(`SELECT ${sql} FROM files WHERE id IN (${ph})${extraWhere}`)
+      .bind(...grp)
+      .all<T>();
+    return r.results ?? [];
+  });
+  return res.flat();
+}
+
 /* ═══════════ 软删除 → 回收站 ═══════════ */
+
+/**
+ * 按 id 收集"我有权处理"的存活文件，并做权限校验（软删除 / 彻底删除共用同一套口径）。
+ * 重复 id 只算一次（勾选状态里可能出现同名键）。
+ */
+async function collectFileRows(
+  env: Env,
+  me: Principal,
+  ids: string[]
+): Promise<{ id: string; path: string; name: string }[]> {
+  const uniq = [...new Set(ids.filter((x) => typeof x === "string" && x))];
+  if (!uniq.length) return [];
+  const rows = await selectByIds<{ id: string; path: string; name: string; owner: string; deleted_at: number | null }>(
+    env, uniq, "id, path, name, owner, deleted_at"
+  );
+  const out: { id: string; path: string; name: string }[] = [];
+  for (const r of rows) {
+    if (!r || r.deleted_at) continue;                    // 已在回收站 ⇒ 幂等跳过
+    if (me.role !== "admin" && r.owner !== me.name) throw new HttpError(403, "无权删除他人文件");
+    if (!canWritePath(me, r.path)) throw new HttpError(403, "无权限删除该位置的文件");
+    out.push({ id: r.id, path: r.path, name: r.name });
+  }
+  return out;
+}
 
 /**
  * 把若干"文件 id"和/或"目录路径"移入回收站。
@@ -296,19 +386,16 @@ export async function moveToTrash(
 ): Promise<number> {
   const now = Date.now();
   const targets: { id: string; path: string; name: string }[] = [];
+  const seen = new Set<string>();
+
+  const push = (t: { id: string; path: string; name: string }) => {
+    if (seen.has(t.id)) return;
+    seen.add(t.id);
+    targets.push(t);
+  };
 
   // ① 按 id 指定的文件
-  for (const id of opts.fileIds ?? []) {
-    const row = await env.db
-      .prepare("SELECT id, path, name, owner, deleted_at FROM files WHERE id = ?1")
-      .bind(id)
-      .first<{ id: string; path: string; name: string; owner: string; deleted_at: number | null }>();
-    if (!row) throw new HttpError(404, "文件不存在");
-    if (row.deleted_at) continue;                       // 已在回收站，幂等跳过
-    if (me.role !== "admin" && row.owner !== me.name) throw new HttpError(403, "无权删除他人文件");
-    if (!canWritePath(me, row.path)) throw new HttpError(403, "无权限删除该位置的文件");
-    targets.push({ id: row.id, path: row.path, name: row.name });
-  }
+  for (const t of await collectFileRows(env, me, opts.fileIds ?? [])) push(t);
 
   // ② 按目录路径递归收集其下所有文件
   for (const dirInput of opts.dirPaths ?? []) {
@@ -319,12 +406,14 @@ export async function moveToTrash(
     if (!canWritePath(me, dir)) throw new HttpError(403, "无权限删除该目录");
 
     const prefix = dir + "/";
+    // 文件表存的是"父目录路径"，所以同一个目标目录对应两种 path：dir 本身 与 dir/（它自己的子目录里）
     const rows = await env.db
-      .prepare("SELECT id, path, name FROM files WHERE deleted_at IS NULL")
+      .prepare("SELECT id, path, name FROM files WHERE deleted_at IS NULL AND (path = ?1 OR path = ?2)")
+      .bind(dir, prefix)
       .all<{ id: string; path: string; name: string }>();
     for (const r of rows.results ?? []) {
       const full = r.path === "/" ? `/${r.name}` : `${r.path}/${r.name}`;
-      if (full === dir || full.startsWith(prefix)) targets.push({ id: r.id, path: r.path, name: r.name });
+      if (full === dir || full.startsWith(prefix)) push({ id: r.id, path: r.path, name: r.name });
     }
 
     // 目录结构行直接移除（还原时按 original_path 重建）
@@ -333,21 +422,84 @@ export async function moveToTrash(
       .filter((d) => d.path === dir || d.path.startsWith(prefix))
       .map((d) => d.path);
     if (toDrop.length) {
-      await env.db.batch(toDrop.map((p) => env.db.prepare("DELETE FROM directories WHERE path = ?1").bind(p)));
+      await batchChunks(env, toDrop.map((p) => ({ q: "DELETE FROM directories WHERE path = ?1", b: [p] })));
     }
   }
 
   if (targets.length === 0) return 0;
 
   // 软删除：记录删除者与原路径，供回收站展示与还原
-  await env.db.batch(
-    targets.map((t) =>
-      env.db
-        .prepare("UPDATE files SET deleted_at = ?1, deleted_by = ?2, original_path = ?3 WHERE id = ?4")
-        .bind(now, me.name, t.path, t.id)
-    )
+  await batchChunks(
+    env,
+    targets.map((t) => ({
+      q: "UPDATE files SET deleted_at = ?1, deleted_by = ?2, original_path = ?3 WHERE id = ?4",
+      b: [now, me.name, t.path, t.id],
+    }))
   );
   return targets.length;
+}
+
+/* ═══════════ 彻底删除（不可恢复） ═══════════ */
+
+/** 抹掉 rows 指向的文件行（连 shares / direct_links 一起），返回还要删哪些存储对象 */
+async function purgeRows(env: Env, ids: string[]): Promise<string[]> {
+  const uniq = [...new Set(ids.filter((x) => typeof x === "string" && x))];
+  if (!uniq.length) return [];
+  const rows = await selectByIds<{ id: string; key: string }>(env, uniq, "id, key");
+  const keys = rows.map((r) => r.key).filter(Boolean);
+  const stmts: { q: string; b: unknown[] }[] = [];
+  for (const id of rows.map((r) => r.id)) {
+    stmts.push({ q: "DELETE FROM shares WHERE file_id = ?1", b: [id] });
+    stmts.push({ q: "DELETE FROM direct_links WHERE file_id = ?1", b: [id] });
+    stmts.push({ q: "DELETE FROM files WHERE id = ?1", b: [id] });
+  }
+  await batchChunks(env, stmts);
+  return keys;
+}
+
+/** 彻底删除：连同存储对象一起抹掉（不可恢复），传入"存活"文件 id */
+export async function purgeFiles(
+  env: Env,
+  me: Principal,
+  ids: string[]
+): Promise<{ purged: number; keys: string[] }> {
+  const rows = await collectFileRows(env, me, ids);
+  return { purged: rows.length, keys: await purgeRows(env, rows.map((r) => r.id)) };
+}
+
+/** 彻底删除：整个目录连同其下所有文件（不可恢复） */
+export async function purgeDir(
+  env: Env,
+  me: Principal,
+  dirInput: string
+): Promise<{ purged: number; keys: string[] }> {
+  const dir = normalizePath(dirInput);
+  if (!dir || dir === "/") throw new HttpError(400, "不允许删除根目录");
+  const top = dir.split("/").filter(Boolean)[0] ?? "";
+  if (isSystemDirName(top)) throw new HttpError(403, "系统保留目录不可删除");
+  if (!canWritePath(me, dir)) throw new HttpError(403, "无权限删除该目录");
+
+  const prefix = dir + "/";
+  const rows = await env.db
+    .prepare("SELECT id, path, name, owner FROM files WHERE path = ?1 OR path = ?2")
+    .bind(dir, prefix)
+    .all<{ id: string; path: string; name: string; owner: string }>();
+  const mine = (rows.results ?? []).filter((r) => {
+    if (me.role !== "admin" && r.owner !== me.name) return false;
+    if (!canWritePath(me, r.path)) return false;
+    return true;
+  });
+  const keys = await purgeRows(env, mine.map((r) => r.id));
+
+  // 目录结构行一起抹掉（不需要留复原线索 —— 不可恢复就是这个意思）
+  const allDirs = await env.db.prepare("SELECT path FROM directories").all<{ path: string }>();
+  const toDrop = (allDirs.results ?? [])
+    .filter((d) => d.path === dir || d.path.startsWith(prefix))
+    .map((d) => d.path);
+  if (toDrop.length) {
+    await batchChunks(env, toDrop.map((p) => ({ q: "DELETE FROM directories WHERE path = ?1", b: [p] })));
+  }
+  return { purged: mine.length, keys };
 }
 
 /* ═══════════ 回收站 ═══════════ */
@@ -436,25 +588,30 @@ export async function purgeFromTrash(
 ): Promise<{ purged: number; keys: string[] }> {
   if (!ids.length) return { purged: 0, keys: [] };
   const scope = trashScopeOf(me);
-  const keys: string[] = [];
-  const okIds: string[] = [];
 
-  for (const id of ids) {
-    const row = await env.db
-      .prepare(`SELECT id, key FROM files WHERE id = ?1 AND ${scope.where}`)
-      .bind(id, ...scope.binds)
-      .first<{ id: string; key: string }>();
-    if (!row) continue;
-    okIds.push(row.id);
-    keys.push(row.key);
-  }
-  if (!okIds.length) return { purged: 0, keys: [] };
+  // 一条 IN 取回"我范围内"的 id/key，替代原来的逐条 round-trip（大批量扫空站会超时）
+  const uniq = [...new Set(ids.filter((x) => typeof x === "string" && x))];
+  const groups = chunkArr(uniq, BATCH_CHUNK);
+  const rows = (
+    await mapLimit(groups, BATCH_PARALLEL, async (grp) => {
+      const ph = grp.map(() => "?").join(",");
+      const r = await env.db
+        .prepare(`SELECT id, key FROM files WHERE id IN (${ph}) AND ${scope.where}`)
+        .bind(...grp, ...scope.binds)
+        .all<{ id: string; key: string }>();
+      return r.results ?? [];
+    })
+  ).flat();
+  if (!rows.length) return { purged: 0, keys: [] };
 
-  await env.db.batch(
+  const okIds = rows.map((r) => r.id);
+  const keys = rows.map((r) => r.key).filter(Boolean);
+  await batchChunks(
+    env,
     okIds.flatMap((id) => [
-      env.db.prepare("DELETE FROM shares WHERE file_id = ?1").bind(id),
-      env.db.prepare("DELETE FROM direct_links WHERE file_id = ?1").bind(id),
-      env.db.prepare("DELETE FROM files WHERE id = ?1").bind(id),
+      { q: "DELETE FROM shares WHERE file_id = ?1", b: [id] as unknown[] },
+      { q: "DELETE FROM direct_links WHERE file_id = ?1", b: [id] },
+      { q: "DELETE FROM files WHERE id = ?1", b: [id] },
     ])
   );
   return { purged: okIds.length, keys };
@@ -477,11 +634,12 @@ export async function collectExpired(
   if (!rows.length) return { ids: [], keys: [] };
 
   const ids = rows.map((r) => r.id);
-  await env.db.batch(
+  await batchChunks(
+    env,
     ids.flatMap((id) => [
-      env.db.prepare("DELETE FROM shares WHERE file_id = ?1").bind(id),
-      env.db.prepare("DELETE FROM direct_links WHERE file_id = ?1").bind(id),
-      env.db.prepare("DELETE FROM files WHERE id = ?1").bind(id),
+      { q: "DELETE FROM shares WHERE file_id = ?1", b: [id] as unknown[] },
+      { q: "DELETE FROM direct_links WHERE file_id = ?1", b: [id] },
+      { q: "DELETE FROM files WHERE id = ?1", b: [id] },
     ])
   );
   return { ids, keys: rows.map((r) => r.key) };
