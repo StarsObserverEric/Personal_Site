@@ -654,6 +654,46 @@ export async function handleAdminApi(
     try {
       const st = await storage(env);
       const result = await st.list({ prefix, marker, limit });
+      // ── 用对象 key 反查 files 表，给存储浏览补上"人能看懂"的信息 ──
+      // 背景：R2/S3 里的对象 key 是 `files/<随机id>`，真正的文件名在 D1 的 files.name，
+      // 所以存储浏览默认只能看到一串乱码，与"文件"页对不上。这里按 key 批量回查，
+      // 让前端能直接显示真实文件名 + 上传者 + 上传时间 + 所在位置，并一键跳到文件页。
+      // 查不到（孤儿对象 / 已被硬删但对象还在）时 record 为 null，前端退化为显示 key。
+      try {
+        const entries = result.entries ?? [];
+        const byKey = new Map<string, any>();
+        const keys = entries.filter((e) => !e.isDir).map((e) => e.key);
+        // 分批（每批 100 个占位符）避开 SQLite 变量数上限
+        for (let i = 0; i < keys.length; i += 100) {
+          const chunk = keys.slice(i, i + 100);
+          if (!chunk.length) break;
+          const ph = chunk.map(() => "?").join(",");
+          const { results }: any = await env.db
+            .prepare(
+              `SELECT id, key, name, owner, path, uploaded_at, deleted_at
+               FROM files WHERE key IN (${ph})`
+            )
+            .bind(...chunk)
+            .all();
+          for (const row of results ?? []) byKey.set(String(row.key), row);
+        }
+        for (const e of entries) {
+          const rec = e.isDir ? null : byKey.get(e.key);
+          (e as any).record = rec
+            ? {
+                id: rec.id,
+                name: rec.name,
+                owner: rec.owner,
+                path: rec.path,
+                uploaded_at: rec.uploaded_at,
+                in_trash: !!rec.deleted_at,
+              }
+            : null;
+        }
+      } catch (dbErr) {
+        // 反查失败不能拖垮整个列表：保持原样返回，前端退化显示 key
+        console.error("storage/objects: file lookup failed:", dbErr);
+      }
       return json({ ok: true, ...result, kind: st.kind });
     } catch (e: any) {
       return json({ ok: false, error: msg(req, `列存储对象失败: ${e?.message ?? e}`, `Storage list failed: ${e?.message ?? e}`) }, 500);
