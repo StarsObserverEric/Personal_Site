@@ -2829,6 +2829,8 @@ function fmSavePrefs(){
 
    约定：
    · 空值（— / 这列没数据）恒排最后，升降序都一样 —— 否则一堆空行插在正中间最碍眼；
+   · **文本列一律忽略大小写**（sensitivity:'base'）：Apple / apple / APPLE 视为同字母、排在一起；
+     真正相等时再用区分大小写做 tie-break，保证顺序确定（详见 sortRows 里的注释）；
    · 状态按列表（files / trash / storage）各自存 localStorage，换页签、刷新都还在；
    · 表头只须写 <th class="sortable" data-sortlist="files" data-sort="size">，
      点击由下面**一个**全局监听器兜住，以后新增列表只要往 SORT_FMT 里加即可。 */
@@ -2899,10 +2901,19 @@ function sortRows(name, rows){
     if(bx && by) return 0;
     if(bx) return 1;                     // 空值沉底，不受升降序影响
     if(by) return -1;
+    // 主比较：sensitivity:'base' = **忽略大小写**（Apple / apple / APPLE 一律判相等），
+    // numeric:true 让文件名里的数字按数值比（IMG2 < IMG10），zh-Hans-CN 让中文按拼音。
     const c = (typeof x === 'number' && typeof y === 'number')
       ? x - y
       : String(x).localeCompare(String(y), 'zh-Hans-CN', { numeric: true, sensitivity: 'base' });
-    return c ? c * dir : 0;
+    if(c) return c * dir;
+    /* ⚠️ 关键：主比较相等时**不能**直接 return 0。
+       返回 0 的话 sort 退化成"稳定排序"，同字母的几行会照搬后端返回的先后，
+       结果就是每个字母组里都是"大写在前、小写在后"（用户看到"所有小写都排在大写后面"）。
+       ⇒ 再补一发**区分大小写**的原生比较做确定性 tie-break：
+       ICU 的原生序是小写在前（'a' < 'A'），于是同字母必然紧挨在一起且顺序稳定可预期。 */
+    if(typeof x === 'number' || typeof y === 'number') return 0;
+    return String(x).localeCompare(String(y), 'zh-Hans-CN', { numeric: true }) * dir;
   });
 }
 /** 可点击排序的表头单元格（整格可点，Tab 能聚焦、Enter/空格也能切） */
