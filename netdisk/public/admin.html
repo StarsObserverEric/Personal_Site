@@ -385,6 +385,13 @@ body {
   display: flex; align-items: center; justify-content: center; background: var(--track-bg);
 }
 .thumb .pv img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* 缩略图是"滚到附近才挂 src"，没挂上的位置给一点低调微光占位，别是一片死板 */
+.thumb .pv img.timg:not([src]) {
+  background: linear-gradient(100deg, var(--track-bg) 25%, rgba(128,140,160,.16) 45%, var(--track-bg) 65%);
+  background-size: 240% 100%;
+  animation: thumbPh 1.4s linear infinite;
+}
+@keyframes thumbPh { from { background-position: 0% 0; } to { background-position: -240% 0; } }
 .thumb .pv .ph { font-size: 26px; color: var(--text-3); }
 .thumb .mt { padding: 7px 9px; border-top: 1px solid var(--stroke); }
 .thumb .mt .n { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2315,6 +2322,136 @@ const RECYCLE_DIR_NAME = 'Recycle_Bin';
 /** 缩略图尺寸滑杆的范围（HTML 与 JS 共用，改一处即可） */
 const THUMB_MIN = 80, THUMB_MAX = 320;
 
+/* ════════════════════════════════════════════════════════════════
+ * 缩略图小图缓存
+ * 为什么要有这一整套：以前缩略图模式是 <img src="/api/admin/files/:id/raw">，
+ * 也就是为了在 80~320px 的**方块**里显示中心一小块，而把整张原图
+ * （常见 4000×3000、甚至 6000×4000 的几 MB 大图）下载 + 全图解码；
+ * CSS 的 object-fit:cover 又只显示居中那一块 —— 流量和解码内存全花在看不见的地方。
+ * 一屏几十张就把标签页卡死，拖动滑杆重排时更是直接假死。
+ *
+ * 现在的做法（两阶段）：
+ *   1) 优先读 /api/admin/thumbs/{id}?w=… —— 一张几十 KB 的正方形小图，
+ *      解码只有目标档位的像素量（默认档位 384² ≈ 15 万像素 vs 原图 1200 万像素）；
+ *   2) 小图还没有 ⇒ 回落读原图，但**只在视口附近**才挂 src（远处留空占位），
+ *      图一解码完就用 canvas 裁一张"中心正方形 + 低分辨率"的 JPEG 回传给后端存好，
+ *      成功后把这个 <img> 换成小图（顺手释放大图的解码内存），
+ *      并记进 THUMB_SIZE，以后就算重开目录也直接走小图。
+ * ════════════════════════════════════════════════════════════════ */
+/** 小图宽度档位（与后端 admin.ts 的 THUMB_WIDTHS 一致，改一处要两处一起改） */
+const THUMB_W = [128, 192, 256, 384, 512, 768];
+/** 回传小图的体积上限（768² q72 一般 ≤120KB，512KB 足够宽松） */
+const THUMB_MAX_UPLOAD = 512 * 1024;
+/** 会话内已确认"缓存小图存在"的文件 id → 那个档位的宽度（省掉 404 试探；档位变大了也能复用旧的小图） */
+const THUMB_SIZE = new Map();
+const THUMB_PENDING = new Set();
+let thumbIO = null, thumbQ = [], thumbBusy = false, thumbTimer = null;
+
+/** 小图档位：方框最大 320 CSS px（滑杆上限），2× 屏要 640 设备像素 → 取最接近的档位 */
+function thumbNeed(){
+  const dpr = Math.min(2, window.devicePixelRatio || 1);   // 3× 屏也只按 2× 生成：肉眼看不出差别，省一半流量
+  const box = Math.max(THUMB_MIN, Math.min(THUMB_MAX, FM.thumb || 150));
+  const want = box * dpr;
+  for(const w of THUMB_W) if(w >= want) return w;
+  return THUMB_W[THUMB_W.length - 1];
+}
+const thumbUrl = (id, w) => `/api/admin/thumbs/${encodeURIComponent(id)}?w=${w}`;
+const rawUrl = id => `/api/admin/files/${encodeURIComponent(id)}/raw`;
+
+/** 只给"视口附近"的图挂 src —— 远处保持空占位，避免一屏几十张大图同时解码 */
+function mountThumbs(){
+  const imgs = $$('#fm-list img.timg');
+  if(!imgs.length) return;
+  if(!thumbIO){
+    thumbIO = new IntersectionObserver(es => {
+      for(const en of es){
+        if(!en.isIntersecting) continue;
+        thumbIO.unobserve(en.target);
+        if(en.target.dataset.mounted) continue;
+        en.target.dataset.mounted = '1';
+        const id = en.target.dataset.thumb;
+        // 已经有缓存小图就直接用（档位沿用已存的那档，拖大滑杆也不用重新下载一遍）；
+        // 否则回落原图，解码完再裁小图存好。
+        const known = THUMB_SIZE.get(id);
+        en.target.dataset.mode = known ? 'thumb' : 'raw';
+        en.target.src = known ? thumbUrl(id, known) : rawUrl(id);
+      }
+    }, { rootMargin: '700px 0px' });
+    // load 事件不冒泡，只能挂在捕获阶段（整个页面只挂这一次）
+    document.addEventListener('load', e => {
+      const im = e.target;
+      if(im && im.classList && im.classList.contains('timg')) queueThumbGen(im);
+    }, true);
+  }
+  for(const im of imgs){ if(!im.dataset.mounted) thumbIO.observe(im); }
+}
+
+/** 原图解码完了：排队生成小图（一次只做一张，且等页面闲下来再做） */
+function queueThumbGen(im){
+  const id = im.dataset.thumb;
+  if(!id || THUMB_PENDING.has(id) || im.dataset.mode !== 'raw') return;
+  if(!im.naturalWidth || im.naturalWidth <= +im.dataset.w) return;   // 原图本来就比目标小，不用生成
+  THUMB_PENDING.add(id); thumbQ.push(im);
+  clearTimeout(thumbTimer);
+  thumbTimer = setTimeout(drainThumbGen, 700);
+}
+
+async function drainThumbGen(){
+  if(thumbBusy) return;
+  thumbBusy = true;
+  try{
+    while(thumbQ.length){
+      try{ await genThumb(thumbQ.shift()); }catch(e){}
+      await new Promise(r => setTimeout(r, 0));   // 让出主线程，别把滚动/拖滑杆卡住
+    }
+  }finally{ thumbBusy = false; }
+}
+
+/** 把一张原图裁成"居中正方形 + 目标分辨率"的 JPEG 回传存进存储 */
+async function genThumb(im){
+  const id = im.dataset.thumb, w = +im.dataset.w;
+  if(!id || im.dataset.mode !== 'raw' || !im.naturalWidth) return;
+  const blob = await thumbBlob(im, im.naturalWidth, im.naturalHeight, w);
+  if(!blob || blob.size > THUMB_MAX_UPLOAD) return;
+  const r = await fetch(thumbUrl(id, w), {
+    method: 'POST', headers: { 'content-type': 'image/jpeg' }, body: blob, credentials: 'same-origin',
+  });
+  if(!r.ok) return;
+  THUMB_SIZE.set(id, w);
+  im.dataset.mode = 'thumb';
+  im.src = thumbUrl(id, w);   // 换成小图：省内存，也让"当前这屏"以后都走小图
+}
+
+/** canvas 裁中心正方形（与 CSS object-fit:cover 的取景完全一致） */
+async function thumbBlob(src, nw, nh, w){
+  try{
+    const c = document.createElement('canvas');
+    c.width = c.height = w;
+    const g = c.getContext('2d');
+    if(!g) return null;
+    g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+    const s = Math.min(nw, nh);
+    g.drawImage(src, (nw - s) / 2, (nh - s) / 2, s, s, 0, 0, w, w);
+    return await new Promise(res => c.toBlob(res, 'image/jpeg', 0.72));
+  }catch(e){ return null; }
+}
+
+/** 上传时装好小图：新传的大图第一次浏览也会卡，先在这儿顺手裁一张存起来 */
+async function genThumbOnUpload(id, file){
+  if(!id || !file || file.size < 96 * 1024) return;
+  const w = thumbNeed();
+  try{
+    const bmp = await createImageBitmap(file);
+    const blob = await thumbBlob(bmp, bmp.width, bmp.height, w);
+    if(bmp.close) bmp.close();
+    if(!blob || blob.size > THUMB_MAX_UPLOAD) return;
+    const r = await fetch(thumbUrl(id, w), {
+      method: 'POST', headers: { 'content-type': 'image/jpeg' }, body: blob, credentials: 'same-origin',
+    });
+    if(r.ok) THUMB_SIZE.set(id, w);
+  }catch(e){ /* 生成失败不影响上传与浏览，下次浏览会再试一次 */ }
+}
+
 function fmLoadPrefs(){
   try{
     const v = localStorage.getItem('fmView');
@@ -2907,13 +3044,18 @@ function renderFM(){
   $('#fm-v-details').onclick = () => { FM.view = 'details'; fmSavePrefs(); renderFM(); };
   $('#fm-v-thumbs').onclick  = () => { FM.view = 'thumbs';  fmSavePrefs(); renderFM(); };
   const th = $('#fm-thumb');
-  if(th) th.oninput = () => {
-    FM.thumb = +th.value; fmSavePrefs();
-    // 滑杆 ↔ 列数 双向联动：滑杆变大 → 单块目标宽变大 → 列数自然变少。
-    // fromSlider 告诉 syncCols 不要回写滑杆位置，否则会跟用户的手指较劲。
-    syncCols({ fromSlider: true });
-    renderFileList();
-  };
+  if(th){
+    let thumbTimerId = null;
+    th.oninput = () => {
+      FM.thumb = +th.value; fmSavePrefs();
+      // 滑杆 ↔ 列数 双向联动：滑杆变大 → 单块目标宽变大 → 列数自然变少。
+      // fromSlider 告诉 syncCols 不要回写滑杆位置，否则会跟用户的手指较劲。
+      syncCols({ fromSlider: true });
+      // 拖动时每 input 都重建整列表，大图会反复解码 → 页面直接卡死，这里节流到 60ms
+      clearTimeout(thumbTimerId);
+      thumbTimerId = setTimeout(renderFileList, 60);
+    };
+  }
 
   // 拖拽上传：单独的投放条 + 整个文件区都能接
   const allowed = d.writable !== false;
@@ -2964,6 +3106,7 @@ function renderFileList(){
   }
   host.innerHTML = FM.view === 'thumbs' ? thumbsHtml(items) : detailsHtml(items);
   bindRowActions();
+  mountThumbs();
 }
 
 function detailsRow(it){
@@ -3038,8 +3181,11 @@ function thumbsHtml(items){
       </div>`;
     }
     const img = isImgFile(it), vid = isVidFile(it);
+    // 图片先不给 src：由 mountThumbs() 按"是否靠近视口"决定挂小图还是原图，
+    // 这样一屏几十张时只有看得见的那几张在真正解码。
     const pv = img
-      ? `<img loading="lazy" decoding="async" src="/api/admin/files/${encodeURIComponent(it.id)}/raw" alt="">`
+      ? `<img class="timg" loading="lazy" decoding="async" fetchpriority="low" alt=""
+               data-thumb="${esc(it.id)}" data-w="${thumbNeed()}" width="${THUMB_MIN}" height="${THUMB_MIN}">`
       : `<span class="ph">${vid ? '🎬' : esc((extOf(it.name) || '?').toUpperCase().slice(0, 4))}</span>`;
     const extra = vid ? fmtDur(it.duration_ms) : (it.width ? `${it.width}×${it.height}` : '');
     return `<div class="thumb" data-fid="${esc(it.id)}" title="${esc(it.name)}">
@@ -3215,6 +3361,8 @@ async function uploadFiles(input, baseDir){
       if(xhr.status === 201){
         if(tx) tx.textContent = t('uploadDone');
         toast(t('uploadOk', {name: file.name}));
+        // 刚传上去的大图先裁一张小图存好，以后浏览这个目录直接读小图（否则第一次浏览照样整张下载+解码）
+        try{ genThumbOnUpload(JSON.parse(xhr.responseText || '{}').id, file); }catch(e){}
         // 注意：整目录上传会落到 base/<子目录>，所以刷新只在"仍停在 base"时进行
         if(FM.path === base) needReload = true;
       } else {
