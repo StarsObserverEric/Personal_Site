@@ -3041,8 +3041,11 @@ function renderFM(){
     syncChecks();
     renderSelBar();
   };
-  $('#fm-v-details').onclick = () => { FM.view = 'details'; fmSavePrefs(); renderFM(); };
-  $('#fm-v-thumbs').onclick  = () => { FM.view = 'thumbs';  fmSavePrefs(); renderFM(); };
+  // ⚠️ 切视图必须顺手重算列数：两种视图的"单列目标宽"不一样（缩略图是滑杆值 80~320，
+  //    详细信息是 880）。以前只 renderFM() 不重算 ⇒ 从详细信息切到缩略图时列数还停在 1，
+  //    于是一张卡片撑满一行、整页变成九张通栏大图（每张还在下原图，拖动直接卡死）。
+  $('#fm-v-details').onclick = () => { FM.view = 'details'; fmSavePrefs(); renderFM(); applyCols(); };
+  $('#fm-v-thumbs').onclick  = () => { FM.view = 'thumbs';  fmSavePrefs(); renderFM(); applyCols(); };
   const th = $('#fm-thumb');
   if(th){
     let thumbTimerId = null;
