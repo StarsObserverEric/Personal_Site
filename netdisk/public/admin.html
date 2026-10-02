@@ -716,14 +716,17 @@ tr.hl-tmp > td, div.hl-tmp {
   -webkit-user-drag: none; cursor: grab; box-shadow: 0 24px 80px rgba(0,0,0,.75);
 }
 /* 原图还在路上时：拿手头那张小图当模糊底衬（相册里那股"先糊后清"的观感） */
+/* pointer-events:none —— 底衬铺满整屏，不设的话它会把黑边上的点击/滚轮全吃掉，
+   变成"点黑边关不掉预览"。 */
 #lb .lb-ph {
   position: absolute; inset: 0; opacity: .85; transform: scale(1.06); filter: blur(26px);
   background-repeat: no-repeat; background-position: center; background-size: contain;
+  pointer-events: none;
 }
 #lb .lb-img.drag { cursor: grabbing; }
 #lb .lb-spin {
   position: absolute; z-index: 2; width: 44px; height: 44px; border-radius: 50%;
-  border: 3px solid rgba(255,255,255,.22); border-top-color: #fff;
+  border: 3px solid rgba(255,255,255,.22); border-top-color: #fff; pointer-events: none;
   animation: lbSpin .8s linear infinite;
 }
 @keyframes lbSpin { to { transform: rotate(360deg); } }
@@ -3830,9 +3833,25 @@ function lbClose(){
   LB = null;
 }
 
-/** 把 {k, tx, ty} 落到 transform 上。位图居中靠 translate(-50%,-50%)，缩放绕元素中心。 */
+/* ⚠️ 缩放模型（这块的数学踩过坑，改之前务必先看懂）：
+   .lb-img 是 `position:absolute; left/top:50%` + `translate(-50%,-50%)` 居中的，
+   而且 `transform-origin: 50% 50%` —— 也就是说 **scale 只放大画面、中心点一动不动**。
+   于是"图在屏幕上的中心"恒等于 (视口中心 + (tx,ty))，与 k 毫无关系。
+   某图里点 (vx,vy)（单位=原图像素）的屏幕位置是：
+       屏幕 = 视口中心 + (tx,ty) + k * ((vx,vy) - (w/2,h/2))
+   下面两个函数就是这条式子的正反变换；lbZoomAt/lbOneToOne 只要求"锚点下面那一点不动"。
+   早先版本把 `(k-1)*w/2` 也算进了中心里 —— 那是按"scale 绕左上角"推的公式，
+   与 transform-origin:50% 50% 冲突，结果一滚轮图就往左上角飞、双击直接飞出屏幕。 */
 function lbPaint(){
   if(!LB) return;
+  const C = window.innerWidth / 2, D = window.innerHeight / 2;
+  const w = LB.k * (LB.nw || 0), h = LB.k * (LB.nh || 0);
+  // 平移夹取：图至少留 80px 在画面内，别让人一不小心把图拖丢（ formerly 全黑屏）
+  const keep = Math.min(80, w, h);
+  const lox = keep - C - w / 2, hix = C + w / 2 - keep;
+  const loy = keep - D - h / 2, hiy = D + h / 2 - keep;
+  LB.tx = lox > hix ? 0 : Math.max(lox, Math.min(hix, LB.tx));
+  LB.ty = loy > hiy ? 0 : Math.max(loy, Math.min(hiy, LB.ty));
   LB.img.style.transform = `translate(-50%,-50%) translate(${LB.tx}px,${LB.ty}px) scale(${LB.k})`;
 }
 /** 布局尺寸 = 原图真实像素（CSS 没加 max-width 约束），所以 offsetWidth 就是 nw。 */
@@ -3846,38 +3865,44 @@ function lbFit(){
   if(!d.w || !d.h) return 1;
   return Math.min(1, window.innerWidth / d.w, window.innerHeight / d.h);
 }
+/** 屏幕点 → 图内点 */
+function lbPt2(px, py){
+  return {
+    x: (LB.nw || 0) / 2 + (px - (window.innerWidth / 2 + LB.tx)) / LB.k,
+    y: (LB.nh || 0) / 2 + (py - (window.innerHeight / 2 + LB.ty)) / LB.k,
+  };
+}
+/** 把图内点 (vx,vy) 摆到屏幕 (px,py) 上（缩放 k 已就位时用它解 tx/ty） */
+function lbPut(vx, vy, px, py, k){
+  LB.k = k;
+  LB.tx = px - window.innerWidth / 2 - k * (vx - (LB.nw || 0) / 2);
+  LB.ty = py - window.innerHeight / 2 - k * (vy - (LB.nh || 0) / 2);
+}
+const lbClampK = k2 => Math.max(LB.fit, Math.min(LB_MAX, k2));
 /** 以屏幕点 (px,py) 为锚点缩放：缩放前后锚点下的那一个"图内点"保持不动 */
 function lbZoomAt(px, py, k2){
   if(!LB) return;
-  const w = lbDims().w, h = lbDims().h;
-  const cx = window.innerWidth / 2 + LB.tx + (LB.k - 1) * w / 2;
-  const cy = window.innerHeight / 2 + LB.ty + (LB.k - 1) * h / 2;
-  const v = { x: (px - cx) / LB.k, y: (py - cy) / LB.k };   // 锚点下的"图内点"
-  // 下限 = fit（最多缩到"整图刚好铺满"，再缩就只剩一个点，没有意义）
-  const k = Math.max(LB.fit, Math.min(LB_MAX, k2));
-  const cx2 = px - k * v.x, cy2 = py - k * v.y;             // 缩放后该点仍落在锚上
-  LB.k = k;
-  LB.tx = cx2 - window.innerWidth / 2 - (k - 1) * w / 2;
-  LB.ty = cy2 - window.innerHeight / 2 - (k - 1) * h / 2;
+  // 缩到最小(=fit)时顺手把图摆回正中：否则"在边上滚轮缩回去"会留下一张歪在角落的图，
+  // 看着像没铺满屏幕。缩到最小就等于"回到整图居中"，符合直觉。
+  if(k2 <= LB.fit){ LB.k = LB.fit; LB.tx = 0; LB.ty = 0; lbPaint(); return; }
+  const v = lbPt2(px, py);
+  lbPut(v.x, v.y, px, py, lbClampK(k2));
   lbPaint();
 }
-/** 双击：一刀切到 1:1（把双击的那一点顶到画面正中）；已经 1:1 了再双击就回到"整图铺满" */
+/** 双击：一刀切到 1:1（双击的那一点不动）；已经 1:1 了再双击就回到"整图铺满" */
 function lbOneToOne(px, py){
   if(!LB) return;
-  const w = lbDims().w, h = lbDims().h;
-  const cx = window.innerWidth / 2 + LB.tx + (LB.k - 1) * w / 2;
-  const cy = window.innerHeight / 2 + LB.ty + (LB.k - 1) * h / 2;
-  const vx = (px - cx) / LB.k, vy = (py - cy) / LB.k;
+  const v = lbPt2(px, py);
   const target = LB.k < 0.995 ? 1 : LB.fit;                 // < 1:1 ⇒ 去 1:1；已经是 ⇒ 回铺满
-  LB.k = target;
-  LB.tx = -target * vx; LB.ty = -target * vy;               // k=1 时中心 = 容器中心 + 位移 ⇒ 位移取 -v
-  void w; void h; void cy;
+  lbPut(v.x, v.y, px, py, target);
   lbPaint();
 }
 
 function lbBind(){
   const img = LB.img;
-  img.addEventListener('wheel', e => {
+  // 滚轮挂在整层上（而不是只在图上）：图很小/在画面外时，指针多半压在黑边上，
+  // 挂只在图上的话滚了半天没反应，体验上像"卡住了"。
+  LB.el.addEventListener('wheel', e => {
     e.preventDefault();
     const f = e.deltaY < 0 ? 1.14 : 1 / 1.14;
     lbZoomAt(e.clientX, e.clientY, LB.k * f);
