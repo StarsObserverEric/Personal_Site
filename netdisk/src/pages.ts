@@ -3,6 +3,7 @@ import shareHTML from "../public/share.html";
 import marketHTML from "../public/market.html";
 import loginHTML from "../public/login.html";
 import { pickLang, type L10n } from "./i18n";
+import type { Env } from "./types";
 
 /**
  * 统一安全响应头 —— 加在所有 HTML / JSON / 下载响应上。
@@ -61,10 +62,24 @@ export function serveAdminPage(): Response {
  * "未登录连界面都进不去"必须在服务端成立 —— 如果只是前端把按钮藏起来，
  * 整个后台的 DOM 和接口路径依然会随 HTML 一起泄露出去。
  */
-export function serveLoginPage(): Response {
+export async function serveLoginPage(env?: Env): Promise<Response> {
   const headers = new Headers({ "content-type": "text/html;charset=utf-8", "cache-control": "no-store" });
   addSecurityHeaders(headers);
-  return new Response(loginHTML, { headers });
+  let html = loginHTML;
+  // 服务端直出 OAuth 按钮（GitHub 登录入口）：前端那次 fetch 万一失败也不会"按钮消失"。
+  if (env) {
+    try {
+      const { renderLoginOAuthButtons } = await import("./oauth_handlers");
+      const { html: btns, count } = await renderLoginOAuthButtons(env);
+      if (count > 0) {
+        html = html.replace('<div id="oauthbtns"></div>', `<div id="oauthbtns">${btns}</div>`);
+      }
+    } catch (e: any) {
+      // 渲染失败就退回前端渲染（原逻辑），登录页照常可用
+      console.error("serveLoginPage: oauth buttons render failed:", e?.message ?? e);
+    }
+  }
+  return new Response(html, { headers });
 }
 
 /**
