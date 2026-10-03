@@ -233,10 +233,15 @@ export async function ensureHeadroom(
   };
 }
 
-/** 删对象，并发封顶（与 admin.ts::dropObjects 同理，这里要 await 到落地） */
-async function dropObjects(st: StorageProvider, keys: string[]): Promise<void> {
-  if (!keys.length) return;
+/**
+ * 删对象，并发封顶（与 admin.ts::dropObjects 同理，这里要 await 到落地）。
+ * 返回**失败条数** —— 不能吞掉：Worker 被墙钟掐断时，一半 delete 只是发出去了、
+ * 请求就死了，报告"成功"等于骗人（2026-10-03 就栽在这：删了 3037 个、实际只剩一半）。
+ */
+async function dropObjects(st: StorageProvider, keys: string[]): Promise<number> {
+  if (!keys.length) return 0;
   let i = 0;
+  let failed = 0;
   await Promise.all(
     Array.from({ length: Math.min(DELETE_CONCURRENCY, keys.length) }, async () => {
       while (i < keys.length) {
@@ -244,11 +249,12 @@ async function dropObjects(st: StorageProvider, keys: string[]): Promise<void> {
         try {
           await st.delete(k);
         } catch {
-          /* 对象本来就不在也算删成功 */
+          failed += 1;
         }
       }
     })
   );
+  return failed;
 }
 
 /* ═══════════ 孤儿对象（R2 有、D1 查不到）—— 白占额度 ═══════════ */
@@ -322,12 +328,21 @@ async function scanOrphans(env: Env, limit = 20): Promise<OrphanScan> {
   };
 }
 
-export function listOrphans(env: Env, limit = 20): Promise<OrphanReport> {
+export interface OrphanReportFull extends OrphanReport {
+  /** 全部孤儿 key（前端分批删除要用；对象特别多时可不加这个字段） */
+  keys?: string[];
+  thumb_count: number;
+  thumb_bytes: number;
+}
+
+export function listOrphans(env: Env, limit = 20): Promise<OrphanReportFull> {
   return scanOrphans(env, limit).then((s) => ({
     count: s.count,
     bytes: s.bytes,
     sample: s.sample,
     scanned: s.scanned,
+    // 只给前 5000 个 key：够前端分批删了，也不至于把响应撑成几 MB
+    keys: s.count <= 5000 ? s.keys : undefined,
     thumb_count: s.thumb_count,
     thumb_bytes: s.thumb_bytes,
   }));
@@ -345,26 +360,36 @@ async function purgeKeys(
   env: Env,
   keys: string[],
   scan: OrphanScan
-): Promise<{ deleted: number; bytes: number; skipped: number }> {
-  if (!keys.length) return { deleted: 0, bytes: 0, skipped: 0 };
+): Promise<{ deleted: number; bytes: number; skipped: number; failed: number }> {
+  if (!keys.length) return { deleted: 0, bytes: 0, skipped: 0, failed: 0 };
   const set = new Set(scan.keys);
   const doomed = keys.filter((k) => set.has(k) && scan.prefixOf.get(k) === "files");
   const st = await createStorageProvider(env, await getSettings(env));
   let bytes = 0;
   for (const k of doomed) bytes += scan.sizeOf.get(k) ?? 0;
-  await dropObjects(st, doomed);
-  console.error(`[quota] 已彻底删除 ${doomed.length} 个孤儿对象，回收 ${bytes} 字节`);
-  return { deleted: doomed.length, bytes, skipped: keys.length - doomed.length };
+  const failed = await dropObjects(st, doomed);
+  const ok = doomed.length - failed;
+  console.error(`[quota] 已彻底删除 ${ok} 个孤儿对象，回收 ${bytes} 字节（失败 ${failed}）`);
+  return { deleted: ok, bytes, skipped: keys.length - doomed.length, failed };
+}
+
+interface PurgeOrphansResult {
+  /** 真删掉的条数（不算被掐断没落地的那些） */
+  deleted: number;
+  bytes: number;
+  /** 传进来的 key 里不属于孤儿 / 不属于 files/ 而被跳过的 */
+  skipped: number;
+  failed: number;
 }
 
 /** 扫一遍并删光所有孤儿（只动 files/ 前缀，缩略图缓存一个不碰） */
-export async function purgeAllOrphans(env: Env): Promise<{ deleted: number; bytes: number; skipped: number }> {
+export async function purgeAllOrphans(env: Env): Promise<PurgeOrphansResult> {
   const scan = await scanOrphans(env, 0);
   return purgeKeys(env, scan.keys, scan);
 }
 
 /** 只删指定的几条孤儿（小步确认用；会按 files/ 前缀再过滤一次） */
-export async function purgeOrphans(env: Env, keys: string[]): Promise<{ deleted: number; bytes: number; skipped: number }> {
+export async function purgeOrphans(env: Env, keys: string[]): Promise<PurgeOrphansResult> {
   if (!keys.length) return { deleted: 0, bytes: 0, skipped: 0 };
   const scan = await scanOrphans(env, 0);
   return purgeKeys(env, keys, scan);
