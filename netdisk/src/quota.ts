@@ -194,6 +194,13 @@ export async function ensureHeadroom(
   const base: HeadroomResult = { ok: true, freed: 0, need, cap, used, free: cap - used - need };
   if (need <= 0 || used + need <= cap) return base;
 
+  // ⚠️ 要腾的是**缺口**，不是"本次文件大小"：
+  //    可用 = cap - used，本次要 need，所以必须腾出 required = used + need - cap。
+  //    之前写成"腾到 >= need"，结果回收站只腾出一个文件大小就放行，
+  //    桶内仍然超上限 —— 正是要避免的那种超额度。
+  const required = used + need - cap;
+  if (required <= 0) return base;
+
   const st = await createStorageProvider(env, await getSettings(env));
   let freed = 0;
 
@@ -217,14 +224,14 @@ export async function ensureHeadroom(
     for (const id of taken) freed += sizeOf.get(id) ?? 0;
 
     console.error(
-      `[quota] 上传需 ${need} B，已自动彻底删除 ${purged} 个最旧回收站文件（+${freed} B）`
+      `[quota] 上传需 ${need} B、缺口 ${required} B，已自动彻底删除 ${purged} 个最旧回收站文件（+${freed} B）`
     );
-    if (freed >= need) break;
+    if (freed >= required) break;
     if (purged < ids.length) break; // 被权限挡住，再循环也腾不出
   }
 
   return {
-    ok: freed >= need,
+    ok: freed >= required,
     freed,
     need,
     cap,
