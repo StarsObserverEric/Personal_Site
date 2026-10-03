@@ -265,8 +265,11 @@ export interface OrphanReport {
 interface OrphanScan extends OrphanReport {
   keys: string[];
   sizeOf: Map<string, number>;
-  /** 每个孤儿对象所在前缀（files/ 或 thumbs/），用于删除前二次确认 */
+  /** 每个孤儿对象所在前缀（只可能是 files/），删除前二次确认用 */
   prefixOf: Map<string, string>;
+  /** 桶内缩略图缓存（不是孤儿，白白占用但删了要重生成，只报告不删） */
+  thumb_count: number;
+  thumb_bytes: number;
 }
 
 /**
@@ -296,14 +299,27 @@ async function scanOrphans(env: Env, limit = 20): Promise<OrphanScan> {
     for (const r of results ?? []) known.add(String(r.key));
   }
 
-  const orphans = keys.filter((k) => !known.has(k));
+  // ⚠️ 孤儿只认 `files/` 前缀：缩略图 key 是 `thumbs/<fileid>-<w>.jpg`，
+  //    与本来的 files.key（`files/<fileid>`）根本不是一回事，拿它反查必然查不到 ——
+  //    把 5822 张缩略图误判成孤儿是"定义写错"，不算回收空间。
+  let thumbBytes = 0;
+  let thumbCount = 0;
+  for (const k of keys) {
+    if (k.startsWith("thumbs/")) { thumbBytes += sizeOf.get(k) ?? 0; thumbCount += 1; }
+  }
+
+  const orphans = keys.filter((k) => k.startsWith("files/") && !known.has(k));
   let bytes = 0;
   const sample: { key: string; size: number; lastModified: number }[] = [];
   for (const k of orphans) {
     bytes += sizeOf.get(k) ?? 0;
     if (sample.length < limit) sample.push({ key: k, size: sizeOf.get(k) ?? 0, lastModified: times.get(k) ?? 0 });
   }
-  return { count: orphans.length, bytes, sample, scanned: keys.length, keys: orphans, sizeOf, prefixOf };
+  return {
+    count: orphans.length, bytes, sample,
+    scanned: keys.length, keys: orphans, sizeOf, prefixOf,
+    thumb_count: thumbCount, thumb_bytes: thumbBytes,
+  };
 }
 
 export function listOrphans(env: Env, limit = 20): Promise<OrphanReport> {
@@ -312,6 +328,8 @@ export function listOrphans(env: Env, limit = 20): Promise<OrphanReport> {
     bytes: s.bytes,
     sample: s.sample,
     scanned: s.scanned,
+    thumb_count: s.thumb_count,
+    thumb_bytes: s.thumb_bytes,
   }));
 }
 
