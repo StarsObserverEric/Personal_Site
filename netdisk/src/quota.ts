@@ -400,7 +400,7 @@ export async function purgeAllOrphans(env: Env): Promise<PurgeOrphansResult> {
 
 /** 只删指定的几条孤儿（小步确认用；会按 files/ 前缀再过滤一次） */
 export async function purgeOrphans(env: Env, keys: string[]): Promise<PurgeOrphansResult> {
-  if (!keys.length) return { deleted: 0, bytes: 0, skipped: 0 };
+  if (!keys.length) return { deleted: 0, bytes: 0, skipped: 0, failed: 0 };
   const scan = await scanOrphans(env, 0);
   return purgeKeys(env, keys, scan);
 }
