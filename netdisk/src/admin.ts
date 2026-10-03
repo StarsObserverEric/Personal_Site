@@ -22,7 +22,7 @@ import { createStorageProvider, type StorageProvider } from "./storage";
 import {
   CF_FREE_STORAGE_BYTES, MEASURE_STALE_MS,
   readMeasure, measureBucket, storageCap, ensureHeadroom,
-  listOrphans, purgeOrphans,
+  listOrphans, purgeOrphans, purgeAllOrphans,
 } from "./quota";
 
 /** 懒加载 StorageProvider —— 每次需要时从 settings 构造（settings 有 5s 缓存，成本低） */
@@ -773,11 +773,12 @@ export async function handleAdminApi(
     if (!me) return json({ error: "unauthorized" }, 401);
     const body = await readJson<{ apply?: boolean; keys?: string[] }>(req).catch(() => ({ apply: false, keys: [] as string[] }));
     // apply 缺省为 true：既然是孤儿（D1 查不到），留着只会一直计费。
-    // 想只扫描不删就传 { apply: false }。
+    // 想只扫描不删就传 { apply: false }；
+    // 传了 keys 就只删这几条（小步确认用），不传就删光扫出来的全部孤儿。
     if (!body.apply) return json({ ok: true, ...(await listOrphans(env)) });
     const keys = Array.isArray(body.keys) ? body.keys.filter((k) => typeof k === "string") : [];
     return withHttpError(async () => {
-      const r = await purgeOrphans(env, keys);
+      const r = keys.length ? await purgeOrphans(env, keys) : await purgeAllOrphans(env);
       // 删完顺手重新校准，容量卡片立刻反映真实占用
       ctx.waitUntil(measureBucket(env).catch(() => {}));
       return json({ ok: true, deleted: r.deleted, bytes: r.bytes, skipped: r.skipped });
