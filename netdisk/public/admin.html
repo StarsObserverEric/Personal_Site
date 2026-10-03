@@ -1092,6 +1092,8 @@ const I18N = {
     // 设置
     siteName: '站点名称', siteNameD: '显示在分享页和后台标题',
     trafficLimit: '月度流量限额（GB）',
+    storageCap: '存储硬上限（GB，十进制）',
+    storageCapD: '网盘容量天花板，必须小于 {free}（Cloudflare 免费额度）。上传前会按桶内真实占用校验，并自动彻底删除回收站里最旧的文件来腾位置；实在腾不出则拒绝上传，确保永不产生存储费用。',
     trafficLimitD: '本月已用 {used}。流量达到限额后，所有下载自动暂停，防止流量超额产生费用。设为 0 表示不限制，每月自动重置。',
     resetTraffic: '重置本月流量', resetTrafficD: '将已用流量清零，立即恢复下载服务', reset: '重置',
     perIp: '单 IP 最大下载次数',
@@ -1496,6 +1498,8 @@ const I18N = {
     // 设置
     siteName: 'Site Name', siteNameD: 'Shown on the share page and console title',
     trafficLimit: 'Monthly Traffic Quota (GB)',
+    storageCap: 'Storage Hard Cap (GB, decimal)',
+    storageCapD: 'Ceiling for the disk and must stay below {free} (Cloudflare free quota). Uploads are checked against the real bucket size and auto-purge the oldest trash files first; once that is not enough, uploads are rejected so storage never becomes billable.',
     trafficLimitD: '{used} used this month. Downloads auto-pause when the quota is reached to avoid overage charges. Set 0 for unlimited; resets monthly.',
     resetTraffic: 'Reset Monthly Traffic', resetTrafficD: 'Zero out used traffic and resume downloads immediately', reset: 'Reset',
     perIp: 'Max Downloads per IP',
@@ -2394,8 +2398,13 @@ function pieLegend(items){
 }
 
 function capSection(u){
-  const used = u.used_bytes || 0, quota = u.quota_bytes || 0;
+  // 分母用**存储硬上限**（十进制口径，与 Cloudflare 免费额度对齐），
+  // 不再用旧的那套 GiB 口径 —— 9.95 GiB = 10.68 GB，本身就超了免费额度。
+  const used = u.used_bytes || 0;
+  const quota = u.cap_bytes || u.quota_bytes || 0;
+  const real = u.real_bytes || 0;
   const pct = quota > 0 ? Math.min(100, used / quota * 100) : 0;
+  const rpct = (u.cf_free_bytes || 0) > 0 ? Math.min(100, real / u.cf_free_bytes * 100) : 0;
   const byUser = (u.by_owner || []).map(x => ({ label: x.key, bytes: x.bytes }));
   const byType = (u.by_type || []).map(x => ({
     label: TYPE_LABEL_KEY[x.key] ? t(TYPE_LABEL_KEY[x.key]) : x.key,
@@ -2416,6 +2425,14 @@ function capSection(u){
       </div>
     </div>
     <div class="cap-bar ${pct >= 90 ? 'warn' : ''}"><i style="width:${pct.toFixed(2)}%"></i></div>
+    <div style="margin-top:6px;font-size:12.5px;color:var(--text-3);line-height:1.7">
+      ☁️ Cloudflare 实测桶内 <b style="color:${rpct >= 95 ? 'var(--danger)' : 'var(--text-2)'}">${fmtSize(real)}</b>
+      / ${fmtSize(u.cf_free_bytes || 0)}（10 GB 免费额度，${rpct.toFixed(1)}%）
+      · 回收站另占 ${fmtSize(u.trash_bytes || 0)}<br>
+      硬上限 ${fmtSize(quota)}：上传前会先自动清空回收站（按删除时间从旧到新彻底删除）来腾位置，
+      实在腾不出就拒绝上传 —— 保证永远不会超过免费额度产生费用
+      ${u.real_at ? ' · 校准于 ' + new Date(u.real_at).toLocaleString() : ' · 校准中…'}
+    </div>
     <div class="cap-grid">
       ${box('👤 ' + esc(t('capByUser')), byUser)}
       ${box('🗂️ ' + esc(t('capByType')), byType)}
@@ -5649,6 +5666,11 @@ async function loadSettings(){
         <input type="number" id="st-limit" min="0" step="0.1" value="${s.traffic_limit_gb}">
       </div>
       <div class="row">
+        <div class="info"><div class="t">🗄️ ${esc(t('storageCap'))}</div>
+          <div class="d">${esc(t('storageCapD',{free:fmtSize(s.cf_free_bytes||0)}))}</div></div>
+        <input type="number" id="st-cap" min="1" max="9.9" step="0.1" value="${(s.storage_cap_gb||0).toFixed(2)}">
+      </div>
+      <div class="row">
         <div class="info"><div class="t">♻️ ${esc(t('resetTraffic'))}</div><div class="d">${esc(t('resetTrafficD'))}</div></div>
         <button class="btn sm" id="st-reset-traffic">${esc(t('reset'))}</button>
       </div>
@@ -5936,6 +5958,7 @@ async function loadSettings(){
     const body = {
       site_title: $('#st-title').value.trim(),
       traffic_limit_gb: Number($('#st-limit').value) || 0,
+      storage_cap_gb: Number($('#st-cap').value) || 0,
       max_downloads_per_ip: Number($('#st-perip').value) || 0,
       count_window_hours: Number($('#st-window').value) || 0,
       auto_ban: $('#st-autoban').checked,
