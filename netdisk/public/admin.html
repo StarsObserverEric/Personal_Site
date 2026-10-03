@@ -3754,8 +3754,8 @@ function detailsRow(it){
     const ro = it.system || it.virtual;      // 系统目录/虚拟目录：不能删、不能改名
     return `<tr class="fm-dir" data-go="${esc(it.path)}">
       <td class="ck">${ro ? '' : `<input type="checkbox" class="fm-ck" data-key="d:${esc(it.path)}" title="${esc(t('selectAll'))}">`}</td>
-      <td><div class="nm"><span>${it.virtual ? '🗑️' : '📁'}</span><span class="tx" title="${esc(it.name)}">${esc(it.name)}</span></div></td>
-      <td class="num">${DASH}</td><td class="num">${DASH}</td><td class="num">${DASH}</td>
+      <td><div class="nm"><span>${it.virtual ? '🗑️' : '📁'}</span><span class="tx" title="${esc(it.name)}${it.count ? ' · ' + String(it.count).toLocaleString() + ' ' + esc(t('fmFileCount')) : ''}">${esc(it.name)}</span></div></td>
+      <td class="num">${it.size ? fmtSize(it.size) : DASH}</td><td class="num">${DASH}</td><td class="num">${DASH}</td>
       <td class="num">${DASH}</td><td class="num">${DASH}</td><td class="num">${DASH}</td><td class="num">${DASH}</td>
       <td><div class="fm-act">${ro ? '' : `
         <button data-move-dir="${esc(it.path)}" data-name="${esc(it.name)}" title="${esc(t('moveTo'))}">📂</button>
@@ -3813,10 +3813,10 @@ function thumbsHtml(items){
   return `<div class="fm-thumbs">${items.map(it => {
     if(it.isDir){
       const ro = it.system || it.virtual;
-      return `<div class="thumb" data-go="${esc(it.path)}" title="${esc(it.name)}">
+      return `<div class="thumb" data-go="${esc(it.path)}" title="${esc(it.name)}${it.count ? ' · ' + String(it.count).toLocaleString() + ' ' + esc(t('fmFileCount')) : ''}">
         ${ro ? '' : ck('d:' + it.path, false)}
         <div class="pv"><span class="ph">${it.virtual ? '🗑️' : '📁'}</span></div>
-        <div class="mt"><div class="n">${esc(it.name)}</div><div class="s">${esc(t('fmFolderCount'))}</div></div>
+        <div class="mt"><div class="n">${esc(it.name)}</div><div class="s">${it.size ? esc(fmtSize(it.size)) : esc(t('fmFolderCount'))}</div></div>
       </div>`;
     }
     const img = isImgFile(it), vid = isVidFile(it);
