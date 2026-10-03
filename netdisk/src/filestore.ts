@@ -90,6 +90,36 @@ export interface DirEntry {
   owner: string;
   /** true 表示这是"回收站"这类派生视图，不是真实目录 */
   virtual?: boolean;
+  /** 该目录**递归**体积（含各级子目录里的文件），列目录时算好，前端直接显示 */
+  size?: number;
+  /** 该目录里**递归**的文件个数（空目录为 0） */
+  count?: number;
+}
+
+/**
+ * 目录递归体积 + 文件数（含各级子目录）。
+ *
+ * ⚠️ `files.path` 存的是**父目录路径**（完整路径 = path + "/" + name），所以递归求和要覆盖两类行：
+ *    · `path = dir`          —— 直接躺在 dir 里的文件
+ *    · `path >= dir+'/' AND path < dir+'0'` —— 各级**子目录**里的文件（子目录的 path 形如 "dir/aaa"，
+ *      'a'=0x61 < '0'=0x30 不成立，但比的是 path 而不是完整路径："dir/aaa" < "dir0" 成立 ⇒ 命中；
+ *      兄弟目录 "dir2" 的 '2'=0x32 > '0' ⇒ 不命中，不用额外过滤）
+ *    这样能走 path 索引，也不会把 `"dir2"` 这种同前缀兄弟目录算进来。
+ */
+async function dirStat(
+  env: Env,
+  scope: { where: string; binds: unknown[] },
+  dir: string
+): Promise<{ size: number; count: number }> {
+  const r = await env.db
+    .prepare(
+      `SELECT COALESCE(SUM(size),0) AS b, COUNT(*) AS n FROM files
+        WHERE deleted_at IS NULL AND (path = ?1 OR (path >= ?2 AND path < ?3))
+          AND ${scope.where}`
+    )
+    .bind(dir, dir + "/", dir + "0", ...scope.binds)
+    .first<{ b: number; n: number }>();
+  return { size: Number(r?.b || 0), count: Number(r?.n || 0) };
 }
 
 export interface FileEntry {
@@ -147,13 +177,21 @@ export async function listDir(env: Env, me: Principal, dirInput: string): Promis
     const userNames = (rows.results ?? []).map((r) => r.name);
 
     const names = visibleRootDirs(me, userNames);
-    const dirs: DirEntry[] = names.map((n) => ({
-      name: n,
-      path: "/" + n,
-      system: isSystemDirName(n),
-      owner: n,
-      virtual: n === RECYCLE_BIN_DIR,
-    }));
+    // 顶层文件夹也顺手算体积（根目录本身不列文件，但"这一列哪个文件夹最大"正是用户想比的）
+    const rootScope = liveScopeOf(me);
+    const dirs: DirEntry[] = [];
+    for (const n of names) {
+      const st = await dirStat(env, rootScope, "/" + n);
+      dirs.push({
+        name: n,
+        path: "/" + n,
+        system: isSystemDirName(n),
+        owner: n,
+        virtual: n === RECYCLE_BIN_DIR,
+        size: st.size,
+        count: st.count,
+      });
+    }
     return { path: "/", breadcrumb: [], dirs, files: [], writable: false };
   }
 
@@ -178,6 +216,16 @@ export async function listDir(env: Env, me: Principal, dirInput: string): Promis
     dirs.push({ name: rest, path: d.path, system: !!d.system, owner: d.owner });
   }
   dirs.sort((a, b) => a.name.localeCompare(b.name, "zh"));
+
+  // 每个子目录乘一个递归体积/文件数查询：子目录通常只有几个， sequential 查询比 JOIN 更直观
+  const subScope = liveScopeOf(me);
+  await Promise.all(
+    dirs.map(async (d) => {
+      const st = await dirStat(env, subScope, d.path);
+      d.size = st.size;
+      d.count = st.count;
+    })
+  );
 
   const scope = liveScopeOf(me);
   const filesRes = await env.db
