@@ -781,7 +781,7 @@ export async function handleAdminApi(
       const r = keys.length ? await purgeOrphans(env, keys) : await purgeAllOrphans(env);
       // 删完顺手重新校准，容量卡片立刻反映真实占用
       ctx.waitUntil(measureBucket(env).catch(() => {}));
-      return json({ ok: true, deleted: r.deleted, bytes: r.bytes, skipped: r.skipped });
+      return json({ ok: true, deleted: r.deleted, bytes: r.bytes, skipped: r.skipped, failed: r.failed });
     });
   }
 
