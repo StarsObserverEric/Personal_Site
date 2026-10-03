@@ -92,27 +92,47 @@ async function saveMeasure(env: Env, bytes: number, objects: number, at: number)
   ]);
 }
 
+/**
+ * 遍历桶内**所有**对象（key / size / lastModified）。
+ *
+ * ⚠️ 坑：R2 的 list 走的是 S3 ListObjectsV2 + `delimiter: "/"`。
+ *    直接 `list({ prefix: "" })` 只会拿到两个"公共前缀"（files/、thumbs/），
+ *    一条真实对象都列不出来（每个 key 都带 /，全被折叠进 commonPrefixes），
+ *    于是校准出来是 0 个对象 / 0 字节 —— 必须**先探顶层前缀、再逐前缀翻页**。
+ */
+async function listAllObjects(st: StorageProvider): Promise<Map<string, { size: number; lastModified: number }>> {
+  const out = new Map<string, { size: number; lastModified: number }>();
+
+  const probe = await st.list({ prefix: "", limit: 1000 });
+  const prefixes = (probe.entries ?? [])
+    .filter((e) => e.isDir && e.key.endsWith("/"))
+    .map((e) => e.key);
+  // 探不到前缀（比如桶里只有零散文件）就退回常用的两个
+  for (const prefix of prefixes.length ? prefixes : ["files/", "thumbs/"]) {
+    let marker: string | undefined;
+    for (let page = 0; page < MEASURE_MAX_PAGES; page++) {
+      const res = await st.list({ prefix, marker, limit: 1000 });
+      for (const e of res.entries ?? []) {
+        if (e.isDir) continue;
+        out.set(e.key, { size: Number(e.size) || 0, lastModified: e.lastModified || 0 });
+      }
+      if (!res.truncated) break;
+      marker = res.nextMarker;
+      if (!marker) break;
+    }
+  }
+  return out;
+}
+
 /** 全桶 list 一遍，把真实占用写回 settings */
 export async function measureBucket(env: Env): Promise<BucketMeasure> {
   const st = await createStorageProvider(env, await getSettings(env));
+  const all = await listAllObjects(st);
   let bytes = 0;
-  let objects = 0;
-  let marker: string | undefined;
-  let pages = 0;
-  for (; pages < MEASURE_MAX_PAGES; pages++) {
-    const res = await st.list({ prefix: "", marker, limit: 1000 });
-    for (const e of res.entries ?? []) {
-      if (e.isDir) continue;
-      objects += 1;
-      bytes += Number(e.size) || 0;
-    }
-    if (!res.truncated) break;
-    marker = res.nextMarker;
-    if (!marker) break;
-  }
+  for (const v of all.values()) bytes += v.size;
   const at = Date.now();
-  await saveMeasure(env, bytes, objects, at);
-  return { bytes, objects, at };
+  await saveMeasure(env, bytes, all.size, at);
+  return { bytes, objects: all.size, at };
 }
 
 /* ═══════════ 硬上限 ═══════════ */
@@ -257,24 +277,11 @@ interface OrphanScan extends OrphanReport {
  */
 async function scanOrphans(env: Env, limit = 20): Promise<OrphanScan> {
   const st = await createStorageProvider(env, await getSettings(env));
-  const keys: string[] = [];
-  const sizeOf = new Map<string, number>();
-  const times = new Map<string, number>();
-  const prefixOf = new Map<string, string>();
-  let marker: string | undefined;
-
-  for (let page = 0; page < MEASURE_MAX_PAGES; page++) {
-    const res = await st.list({ prefix: "", marker, limit: 1000 });
-    for (const e of res.entries ?? []) {
-      if (e.isDir) continue;
-      keys.push(e.key);
-      sizeOf.set(e.key, Number(e.size) || 0);
-      times.set(e.key, e.lastModified || 0);
-      prefixOf.set(e.key, e.key.indexOf("/") > 0 ? e.key.slice(0, e.key.indexOf("/")) : "");
-    }
-    if (!res.truncated || !res.nextMarker) break;
-    marker = res.nextMarker;
-  }
+  const all = await listAllObjects(st);
+  const keys = [...all.keys()];
+  const sizeOf = new Map([...all].map(([k, v]) => [k, v.size]));
+  const times = new Map([...all].map(([k, v]) => [k, v.lastModified]));
+  const prefixOf = new Map(keys.map((k) => [k, k.indexOf("/") > 0 ? k.slice(0, k.indexOf("/")) : ""]));
 
   // 分批反查 files.key，找出查不到的
   const known = new Set<string>();
