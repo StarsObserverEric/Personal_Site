@@ -19,6 +19,11 @@ import { hashPassword } from "./public";
 import { parseUA } from "./ua";
 import { encryptSecret, decryptSecret, totpGenerateSecret, totpVerify, totpUri, totpGenerateRecoveryCodes, sha256Hex, safeEqual } from "./crypto";
 import { createStorageProvider, type StorageProvider } from "./storage";
+import {
+  CF_FREE_STORAGE_BYTES, MEASURE_STALE_MS,
+  readMeasure, measureBucket, storageCap, ensureHeadroom,
+  listOrphans, purgeOrphans,
+} from "./quota";
 
 /** 懒加载 StorageProvider —— 每次需要时从 settings 构造（settings 有 5s 缓存，成本低） */
 let _storagePromise: Promise<StorageProvider> | null = null;
@@ -448,6 +453,27 @@ export async function handleAdminApi(
     if (!dir || !canWritePath(me, dir)) {
       return json({ error: msg(req, "没有权限写入该目录", "No permission to write to this directory") }, 403);
     }
+    // ── 硬上限：对齐 Cloudflare 免费额度 ────────────────────────
+    // 之前这里完全没有校验，"设了 9.95 GB"只是显示用的分母，传多大多都放过去。
+    // 现在按**桶内真实字节数**（定时 list 全桶累加，含孤儿对象与缩略图）算余量，
+    // 不够就自动彻底删除回收站里删除时间最久的那批文件，实在腾不出才 413。
+    const upSize = Number(req.headers.get("content-length") || 0) || 0;
+    if (upSize > 0) {
+      const hr = await ensureHeadroom(env, me, upSize);
+      if (!hr.ok) {
+        return json({
+          error: msg(
+            req,
+            `空间不足：Cloudflare 免费额度上限 ${(hr.cap / 1e9).toFixed(2)} GB，`
+              + `桶内已用 ${(hr.used / 1e9).toFixed(2)} GB，本次需 ${(hr.need / 1e9).toFixed(2)} GB。`
+              + `已自动清空回收站仍腾不出，请先删除一些文件。`,
+            `Not enough space: cap ${(hr.cap / 1e9).toFixed(2)} GB, used ${(hr.used / 1e9).toFixed(2)} GB, `
+              + `need ${(hr.need / 1e9).toFixed(2)} GB (trash already auto-purged). Delete some files first.`
+          ),
+          code: "storage_cap",
+        }, 413);
+      }
+    }
     // 整目录上传时 dir 可能是还不存在的新子目录，这里把祖先链补上，
     // 否则文件落库后父目录缺失、在目录树里点不进去。
     try {
@@ -704,7 +730,58 @@ export async function handleAdminApi(
   if (path === "/api/admin/storage-usage" && method === "GET") {
     const me = await resolvePrincipal(req, env);
     if (!me) return json({ error: "unauthorized" }, 401);
-    return withHttpError(async () => json({ ok: true, ...(await storageUsage(env, me)) }));
+    return withHttpError(async () => {
+      const u: any = await storageUsage(env, me);
+      // 桶内真实占用（含孤儿对象与缩略图缓存）—— Cloudflare 只按这个收钱
+      const m = await readMeasure(env);
+      u.real_bytes = m?.bytes ?? 0;
+      u.real_objects = m?.objects ?? 0;
+      u.real_at = m?.at ?? 0;
+      u.real_stale = !m?.at || Date.now() - m.at > MEASURE_STALE_MS;
+      u.cap_bytes = await storageCap(env);
+      u.cf_free_bytes = CF_FREE_STORAGE_BYTES;
+      // 校准值过期就后台重测一次（本次返回用的还是旧值，下次打开就是准的）
+      if (u.real_stale) {
+        ctx.waitUntil(
+          measureBucket(env).catch((err) => console.error("storage re-measure failed:", err))
+        );
+      }
+      return json({ ok: true, ...u });
+    });
+  }
+
+  // ── 校准桶内真实占用（概览/容量页发现过期时后台自动跑，这里给手动触发）──
+  if (path === "/api/admin/storage/measure" && method === "POST") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    return withHttpError(async () => {
+      const m = await measureBucket(env);
+      return json({ ok: true, bytes: m.bytes, objects: m.objects, at: m.at, cap: await storageCap(env) });
+    });
+  }
+
+  // ── 孤儿对象（R2 里有、files 表里查不到）：白占 Cloudflare 额度 ──
+  //   GET  = 只扫描，报告有多少个 / 多少字节（不动任何东西）
+  //   POST = { apply: true } 时才真删
+  if (path === "/api/admin/orphans" && method === "GET") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    return withHttpError(async () => json({ ok: true, ...(await listOrphans(env)) }));
+  }
+  if (path === "/api/admin/orphans" && method === "POST") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const body = await readJson<{ apply?: boolean; keys?: string[] }>(req).catch(() => ({ apply: false, keys: [] as string[] }));
+    // apply 缺省为 true：既然是孤儿（D1 查不到），留着只会一直计费。
+    // 想只扫描不删就传 { apply: false }。
+    if (!body.apply) return json({ ok: true, ...(await listOrphans(env)) });
+    const keys = Array.isArray(body.keys) ? body.keys.filter((k) => typeof k === "string") : [];
+    return withHttpError(async () => {
+      const r = await purgeOrphans(env, keys);
+      // 删完顺手重新校准，容量卡片立刻反映真实占用
+      ctx.waitUntil(measureBucket(env).catch(() => {}));
+      return json({ ok: true, deleted: r.deleted, bytes: r.bytes, skipped: r.skipped });
+    });
   }
 
   // ── 重命名文件 ────────────────────────────────────
@@ -1427,6 +1504,11 @@ export async function handleAdminApi(
     return json({
       site_title: s.siteTitle,
       traffic_limit_gb: s.trafficLimitBytes / 1024 ** 3,
+      // 存储硬上限（十进制字节，与 Cloudflare 免费额度同一口径）。
+      // 上传前会按"桶内真实字节数"校验；回收站也会在需要时自动被清空来腾位置。
+      storage_cap_bytes: await storageCap(env),
+      storage_cap_gb: (await storageCap(env)) / 1e9,
+      cf_free_bytes: CF_FREE_STORAGE_BYTES,
       max_downloads_per_ip: s.maxDownloadsPerIp,
       count_window_hours: s.countWindowHours,
       auto_ban: s.autoBan,
@@ -1492,6 +1574,16 @@ export async function handleAdminApi(
     const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null);
     const gb = num(body.traffic_limit_gb);
     if (gb !== null) patch.traffic_limit_bytes = String(Math.round(gb * 1024 ** 3));
+    // 存储硬上限：出厂必须**小于** Cloudflare 免费额度 10 GB（十进制）。
+    // 上限 9.9 GB 也放行（毕竟余量 100 MB 已经很紧），但 ≥10 GB 一律拒绝 ——
+    // 那是钱的事，不能赌。
+    const capBytes = num(body.storage_cap_bytes);
+    if (capBytes !== null) patch.storage_cap_bytes = String(Math.round(capBytes));
+    const capGb = num(body.storage_cap_gb);
+    if (capGb !== null) patch.storage_cap_bytes = String(Math.round(capGb * 1e9));
+    if (patch.storage_cap_bytes && Number(patch.storage_cap_bytes) >= CF_FREE_STORAGE_BYTES) {
+      delete patch.storage_cap_bytes;
+    }
     const perIp = num(body.max_downloads_per_ip);
     if (perIp !== null) patch.max_downloads_per_ip = String(Math.floor(perIp));
     const window = num(body.count_window_hours);
