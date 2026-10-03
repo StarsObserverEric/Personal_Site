@@ -96,6 +96,17 @@ export default {
       (async () => {
         try {
           await ensureSchema(env);
+          // 顺带校准桶内真实占用（Cloudflare 是按这个收钱的：
+          //   孤儿对象、缩略图缓存都算进去，D1 求和会算漏）
+          // —— 这样上传前的硬上限校验（quota.ensureHeadroom）拿到的就是准数。
+          try {
+            const { measureBucket } = await import("./quota");
+            const m = await measureBucket(env);
+            console.log(`[cron ${event.cron}] 桶内实测 ${m.objects} 个对象 / ${m.bytes} 字节`);
+          } catch (err) {
+            console.error("[cron] 容量校准失败:", err);
+          }
+
           const { collectExpired } = await import("./filestore");
           const { ids, keys } = await collectExpired(env);
           if (keys.length) {
