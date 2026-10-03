@@ -334,20 +334,31 @@ export function listOrphans(env: Env, limit = 20): Promise<OrphanReport> {
 }
 
 /**
- * 真正删掉孤儿对象（不可恢复，调用前务必先让用户看过 report.count / report.bytes）。
- * 长度与字节数与扫描时保持一致，全部落在 files/ 前缀下（thumbs/ 是缩略图缓存，不动）。
+ * 真的删掉孤儿对象（不可恢复）。
+ *
+ * ⚠️ 只准删 `files/` 前缀：thumbs/ 是缩略图缓存，key 长得像孤儿但删了要重生成，
+ *    而且它们同样占 Cloudflare 的额度 —— 属于"该留的"，不是"该清的"。
+ *
+ * @param scan 同一次扫描的结果（避免为了拿字节数再扫一遍）
  */
-export async function purgeOrphans(
+async function purgeKeys(
   env: Env,
-  keys: string[]
+  keys: string[],
+  scan: OrphanScan
 ): Promise<{ deleted: number; bytes: number; skipped: number }> {
   if (!keys.length) return { deleted: 0, bytes: 0, skipped: 0 };
-  const scan = await scanOrphans(env, 0);
   const set = new Set(scan.keys);
   const doomed = keys.filter((k) => set.has(k) && scan.prefixOf.get(k) === "files");
   const st = await createStorageProvider(env, await getSettings(env));
   let bytes = 0;
   for (const k of doomed) bytes += scan.sizeOf.get(k) ?? 0;
   await dropObjects(st, doomed);
+  console.error(`[quota] 已彻底删除 ${doomed.length} 个孤儿对象，回收 ${bytes} 字节`);
   return { deleted: doomed.length, bytes, skipped: keys.length - doomed.length };
+}
+
+/** 扫一遍并删光所有孤儿（只动 files/ 前缀，缩略图缓存一个不碰） */
+export async function purgeAllOrphans(env: Env): Promise<{ deleted: number; bytes: number; skipped: number }> {
+  const scan = await scanOrphans(env, 0);
+  return purgeKeys(env, scan.keys, scan);
 }
