@@ -214,20 +214,23 @@ export async function ensureHeadroom(
     const batch = rows.results ?? [];
     if (!batch.length) break;
 
-    const ids = batch.map((r) => r.id);
     const sizeOf = new Map(batch.map((r) => [r.id, Number(r.size) || 0]));
-    const { purged, keys } = await purgeFromTrash(env, me, ids);
-    await dropObjects(st, keys);
-
-    // purgeFromTrash 只删"我权限范围内"的行，keys 与被删行同序同长，按序折算腾出的字节
-    const taken = ids.slice(0, Math.min(purged, keys.length));
-    for (const id of taken) freed += sizeOf.get(id) ?? 0;
-
+    let deleted = 0;
+    // 从**最旧**的一个开始逐个彻底删除，腾够就用不了了为止
+    // （不能"删一整批"：那会为了腾 6 MB 把 12 MB 的回收站全清空）
+    for (const row of batch) {
+      const { purged, keys } = await purgeFromTrash(env, me, [row.id]);
+      await dropObjects(st, keys);
+      if (purged > 0) {
+        deleted += purged;
+        freed += sizeOf.get(row.id) ?? 0;
+      }
+      if (freed >= required) break;
+    }
     console.error(
-      `[quota] 上传需 ${need} B、缺口 ${required} B，已自动彻底删除 ${purged} 个最旧回收站文件（+${freed} B）`
+      `[quota] 上传需 ${need} B、缺口 ${required} B，已自动彻底删除 ${deleted} 个最旧回收站文件（+${freed} B）`
     );
     if (freed >= required) break;
-    if (purged < ids.length) break; // 被权限挡住，再循环也腾不出
   }
 
   return {
