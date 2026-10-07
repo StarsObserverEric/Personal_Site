@@ -2,7 +2,7 @@ import type { Env } from "./types";
 import { ensureSchema, randomId, getSchemaStatus, repairDatabase } from "./db";
 import { generateCodes, makeBatchId, formatCodeStatus, findCodeByString } from "./codes";
 import { getSettings, updateSettings } from "./settings";
-import { checkAdminKey, checkAdminUser, verifyCredentials, verifyAdminReauth, createSession, verifySession, clientIp, rateLimitLogin, requireAdminIp } from "./auth";
+import { verifyCredentials, verifyAdminReauth, createSession, verifySession, clientIp, rateLimitLogin, requireAdminIp } from "./auth";
 import {
   resolvePrincipal, homeDirOf, landingDirOf, liveScopeOf,
   canWritePath, normalizePath,
@@ -715,6 +715,9 @@ export async function handleAdminApi(
     const st = await storage(env);
 
     if (method === "GET") {
+      // 先确认该 id 对应一个真实存在的文件，避免拿猜测的 id 读任意 R2 key（POST 侧已有归属校验，GET 侧补上）
+      const f = await env.db.prepare("SELECT id FROM files WHERE id = ?1").bind(id).first();
+      if (!f) return json({ error: msg(req, "文件不存在", "File not found") }, 404);
       const o = await st.get(key);
       if (!o) return json({ error: msg(req, "缩略图尚未生成", "Thumb not ready") }, 404);
       const h = new Headers();
@@ -1494,12 +1497,9 @@ export async function handleAdminApi(
     }
 
     if (method === "DELETE") {
-      // 先查出关联的 file_id 用于清理孤儿
-      const before: any = await env.db.prepare("SELECT file_id FROM direct_links WHERE id = ?1").bind(dlId).first();
       const r = await env.db.prepare("DELETE FROM direct_links WHERE id = ?1").bind(dlId).run();
       if ((r.meta.changes ?? 0) === 0) return json({ error: msg(req, "直链不存在", "Direct link not found") }, 404);
-      // 清理孤儿：如果该 file_id 不再被任何 shares 或 direct_links 引用，不自动删（管理员可手动清理）
-      void before;
+      // 孤儿清理：若该 file_id 不再被任何 shares/direct_links 引用，不自动删（管理员可手动清理）
       return json({ ok: true });
     }
   }
@@ -1525,7 +1525,7 @@ export async function handleAdminApi(
     const enabledProviders = providers.results.filter((p) => p.enabled);
     return json({
       site_title: s.siteTitle,
-      traffic_limit_gb: s.trafficLimitBytes / 1024 ** 3,
+      traffic_limit_gb: s.trafficLimitBytes / 1e9,
       // 存储硬上限（十进制字节，与 Cloudflare 免费额度同一口径）。
       // 上传前会按"桶内真实字节数"校验；回收站也会在需要时自动被清空来腾位置。
       storage_cap_bytes: await storageCap(env),
@@ -1595,7 +1595,7 @@ export async function handleAdminApi(
       patch.site_title = body.site_title.trim().slice(0, 50);
     const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null);
     const gb = num(body.traffic_limit_gb);
-    if (gb !== null) patch.traffic_limit_bytes = String(Math.round(gb * 1024 ** 3));
+    if (gb !== null) patch.traffic_limit_bytes = String(Math.round(gb * 1e9));
     // 存储硬上限：出厂必须**小于** Cloudflare 免费额度 10 GB（十进制）。
     // 上限 9.9 GB 也放行（毕竟余量 100 MB 已经很紧），但 ≥10 GB 一律拒绝 ——
     // 那是钱的事，不能赌。
@@ -1604,7 +1604,11 @@ export async function handleAdminApi(
     const capGb = num(body.storage_cap_gb);
     if (capGb !== null) patch.storage_cap_bytes = String(Math.round(capGb * 1e9));
     if (patch.storage_cap_bytes && Number(patch.storage_cap_bytes) >= CF_FREE_STORAGE_BYTES) {
-      delete patch.storage_cap_bytes;
+      // 之前是静默 delete patch 再 return ok ⇒ 前端以为存成功、实际没存。改为明确报错
+      return json(
+        { error: msg(req, `存储上限不能超过 Cloudflare 免费额度 ${(CF_FREE_STORAGE_BYTES / 1e9)} GB`, "Storage cap cannot exceed Cloudflare free tier") },
+        400
+      );
     }
     const perIp = num(body.max_downloads_per_ip);
     if (perIp !== null) patch.max_downloads_per_ip = String(Math.floor(perIp));
@@ -2244,7 +2248,7 @@ export async function handleAdminApi(
         const prov = createS3Provider(cfg);
         const testKey = `_r2pan-test-${Date.now()}`;
         // 写一个测试对象
-        await prov.put(testKey, new TextEncoder().encode("cloud-r2pan storage test").buffer, {
+        await prov.put(testKey, new TextEncoder().encode("cloud-r2pan storage test"), {
           contentType: "text/plain",
         });
         // 读回验证

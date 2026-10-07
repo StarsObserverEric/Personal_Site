@@ -264,6 +264,10 @@ export async function handleVerify(req: Request, env: Env, token: string): Promi
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405 });
   const row = await getShare(env, token);
   if (!row) return json({ error: "not_found" }, { status: 404 });
+  // 已撤销 / 过期 / 达下载上限的分享，不能换到下载令牌（下推拦截太脆弱，这里先卡死）
+  if (row.revoked) return json({ error: "revoked" }, { status: 410 });
+  if (row.expires_at && row.expires_at < Date.now()) return json({ error: "expired" }, { status: 410 });
+  if (row.max_downloads && row.download_count >= row.max_downloads) return json({ error: "maxed" }, { status: 410 });
   let body: { password?: string; turnstile?: string } = {};
   try {
     body = await req.json();
@@ -352,9 +356,12 @@ export async function handleDownload(
   if (row.max_downloads && row.download_count >= row.max_downloads) return errorPage(req, 410, { zh: "下载次数已达上限", en: "Download Limit Reached" },
     { zh: `该资源允许下载 ${row.max_downloads} 次，名额已用完。`, en: `Download limit (${row.max_downloads}) reached.` });
 
-  if (row.max_downloads) {
+  // 原子递增下载计数：设了上限就顺带校验（download_count < max），没设上限也照常计数
+  // （之前被 `if (row.max_downloads)` 包住 ⇒ 无限次分享计数永远 0，市场热度榜系统性偏低）
+  {
     const r = await env.db.prepare(
-      `UPDATE shares SET download_count = download_count + 1 WHERE id = ?1 AND download_count < ?2`
+      `UPDATE shares SET download_count = download_count + 1
+       WHERE id = ?1 AND (download_count < ?2 OR ?2 IS NULL OR ?2 = 0)`
     ).bind(token, row.max_downloads).run();
     if ((r.meta.changes ?? 0) === 0)
       return errorPage(req, 410, { zh: "下载次数已达上限", en: "Download Limit Reached" },
@@ -490,9 +497,11 @@ export async function handleDirectDownload(
   if (row.max_downloads && row.download_count >= row.max_downloads) return errorPage(req, 410, { zh: "下载次数已达上限", en: "Download Limit Reached" },
     { zh: `名额已用完。`, en: `Quota used up.` });
 
-  if (row.max_downloads) {
+  // 原子递增下载计数：设了上限就顺带校验，没设上限也照常计数（避免无限次直链计数恒 0）
+  {
     const r = await env.db.prepare(
-      `UPDATE direct_links SET download_count = download_count + 1 WHERE id = ?1 AND download_count < ?2`
+      `UPDATE direct_links SET download_count = download_count + 1
+       WHERE id = ?1 AND (download_count < ?2 OR ?2 IS NULL OR ?2 = 0)`
     ).bind(token, row.max_downloads).run();
     if ((r.meta.changes ?? 0) === 0)
       return errorPage(req, 410, { zh: "下载次数已达上限", en: "Download Limit Reached" },
@@ -599,15 +608,39 @@ async function streamFile(
   // 后台记录
   const bytes = servedLen;
   const codeId = codeRow ? codeRow.code : null;
-  ctx.waitUntil(
-    (async () => {
-      const { browser, os } = parseUA(ua);
+  const { browser, os } = parseUA(ua);
 
-      if (env.analytics) {
+  // 关键记账（下载日志 / 流量累加 / 激活码扣减）必须**同步落库**后再返回响应，
+  // 否则并发下载会先过 maxDownloadsPerIp 计数检查、再各自写日志，
+  // 使限流/自动封禁被并发绕过（#7）。Analytics 非关键，仍走 waitUntil。
+  try {
+    await env.db.prepare(
+      `INSERT INTO download_logs(share_id, file_id, file_name, ip, ua, browser, os, country, bytes, created_at, activation_code)
+       VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
+    )
+      // 直链也记 download_logs —— share_id 字段存 direct link token 方便追踪
+      .bind(token, row.file_id, row.name, ip, ua.slice(0, 500), browser, os, country, bytes, Date.now(), codeId)
+      .run();
+    await addTraffic(env, bytes);
+    if (codeRow) {
+      const dr = await deductQuota(env, codeRow, bytes);
+      if (!dr.ok) {
+        console.warn(`[code-decline] code=${codeRow.code} reason=${dr.reason} msg=${dr.message}`);
+      }
+    }
+  } catch (e) {
+    console.error("[download] 记账失败（不影响本次下载）:", e);
+  }
+
+  // Analytics 非关键，异步即可
+  if (env.analytics) {
+    const analytics = env.analytics;
+    ctx.waitUntil(
+      (async () => {
         try {
           const latitude = req.headers.get("cf-ip-latitude") ?? "";
           const longitude = req.headers.get("cf-ip-longitude") ?? "";
-          env.analytics.writeDataPoint({
+          analytics.writeDataPoint({
             blobs: [
               country, row.name, browser, os, token,
               codeId ?? "none", latitude, longitude,
@@ -617,24 +650,9 @@ async function streamFile(
             indexes: [token],
           });
         } catch { /* ignore */ }
-      }
-
-      await env.db.prepare(
-        `INSERT INTO download_logs(share_id, file_id, file_name, ip, ua, browser, os, country, bytes, created_at, activation_code)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
-      )
-        // 直链也记 download_logs —— share_id 字段存 direct link token 方便追踪
-        .bind(token, row.file_id, row.name, ip, ua.slice(0, 500), browser, os, country, bytes, Date.now(), codeId)
-        .run();
-      await addTraffic(env, bytes);
-      if (codeRow) {
-        const dr = await deductQuota(env, codeRow, bytes);
-        if (!dr.ok) {
-          console.warn(`[code-decline] code=${codeRow.code} reason=${dr.reason} msg=${dr.message}`);
-        }
-      }
-    })()
-  );
+      })()
+    );
+  }
 
   return new Response(obj.body, { status: range ? 206 : 200, headers });
 }

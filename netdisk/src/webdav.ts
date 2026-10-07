@@ -36,6 +36,12 @@ async function storage(env: Env): Promise<StorageProvider> {
 
 /* ═══════════ 工具函数 ═══════════ */
 
+/** 转义 LIKE 通配符（%、_）与转义符本身，配合 SQL `ESCAPE '\'` 使用，
+ *  避免目录名含 % / _ 时跨层误匹配（例：名为 "100%" 的目录会匹配所有路径） */
+function escapeLike(s: string): string {
+  return s.replace(/[\\%_]/g, "\\$&");
+}
+
 /** 路径标准化：确保以 / 开头，不以 / 结尾（根目录除外） */
 function normPath(p: string): string {
   p = decodeURIComponent(p);
@@ -143,8 +149,8 @@ async function directoryExists(env: Env, path: string): Promise<boolean> {
   if (child) return true;
   // 有文件以这个目录开头（更深层）—— 也算存在
   const deeper: any = await env.db
-    .prepare("SELECT 1 FROM files WHERE path LIKE ?1 LIMIT 1")
-    .bind(path + "/%")
+    .prepare("SELECT 1 FROM files WHERE path LIKE ?1 ESCAPE '\\' LIMIT 1")
+    .bind(escapeLike(path) + "/%")
     .first();
   return !!deeper;
 }
@@ -156,8 +162,8 @@ async function listDirChildren(env: Env, path: string): Promise<{ files: DBFile[
 
   // 1. 直接子文件：path = 父路径 + "/" + name（精确）
   const { results: files } = await env.db
-    .prepare("SELECT id, key, name, size, mime, path, uploaded_at FROM files WHERE path LIKE ?1")
-    .bind(path === "" ? "/%" : path + "/%")
+    .prepare("SELECT id, key, name, size, mime, path, uploaded_at FROM files WHERE path LIKE ?1 ESCAPE '\\'")
+    .bind(path === "" ? "/%" : escapeLike(path) + "/%")
     .all<DBFile>();
 
   // 过滤出直接子文件（不是子目录里的）
@@ -193,8 +199,8 @@ async function listDirChildren(env: Env, path: string): Promise<{ files: DBFile[
   // 2. directories 表里显式创建的子目录
   const dirPrefix = path === "" ? "/" : nextSlash;
   const { results: explicitDirs } = await env.db
-    .prepare("SELECT path FROM directories WHERE path LIKE ?1 AND path != ?2")
-    .bind(dirPrefix + "%", path === "" ? "/" : path)
+    .prepare("SELECT path FROM directories WHERE path LIKE ?1 ESCAPE '\\' AND path != ?2")
+    .bind(escapeLike(dirPrefix) + "%", path === "" ? "/" : path)
     .all<{ path: string }>();
 
   for (const d of explicitDirs) {
@@ -648,9 +654,9 @@ async function handleWebDavDelete(env: Env, internalPath: string): Promise<Respo
   if (await directoryExists(env, internalPath)) {
     // 递归删除目录下所有文件
     const st = await storage(env);
-    const likePattern = internalPath + "/%";
+    const likePattern = escapeLike(internalPath) + "/%";
     const { results: files } = await env.db
-      .prepare("SELECT id, key FROM files WHERE path LIKE ?1")
+      .prepare("SELECT id, key FROM files WHERE path LIKE ?1 ESCAPE '\\'")
       .bind(likePattern)
       .all<{ id: string; key: string }>();
 
@@ -859,9 +865,9 @@ async function moveFile(env: Env, srcPath: string, destPath: string): Promise<vo
 /* ═══════════ 辅助：移动目录（递归更新 path 前缀） ═══════════ */
 
 async function moveDirectory(env: Env, srcDir: string, destDir: string): Promise<void> {
-  const likePattern = srcDir === "/" ? "/%" : srcDir + "/%";
+  const likePattern = srcDir === "/" ? "/%" : escapeLike(srcDir) + "/%";
   const { results: files } = await env.db
-    .prepare("SELECT id, path FROM files WHERE path LIKE ?1")
+    .prepare("SELECT id, path FROM files WHERE path LIKE ?1 ESCAPE '\\'")
     .bind(likePattern)
     .all<{ id: string; path: string }>();
 
@@ -878,7 +884,7 @@ async function moveDirectory(env: Env, srcDir: string, destDir: string): Promise
 
   // 也更新 directories 表中的子目录记录
   const { results: dirs } = await env.db
-    .prepare("SELECT path FROM directories WHERE path LIKE ?1")
+    .prepare("SELECT path FROM directories WHERE path LIKE ?1 ESCAPE '\\'")
     .bind(likePattern)
     .all<{ path: string }>();
 

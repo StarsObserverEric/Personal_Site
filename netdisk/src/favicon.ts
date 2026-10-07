@@ -2,8 +2,8 @@
  * 站点图标（ICO 内联 base64）。
  *
  * ⚠️ 本文件由脚本自动生成，请勿手改：
- *   python "E:\Program Files (x86)\workbuddy_log\Program\_bin\gen-favicon.py"
- * 源图：E:\Personal_Site\ico.jpg
+ *   生成脚本（gen-favicon.py）与源图（ico.jpg）未纳入仓库，
+ *   换机器时需将脚本与源图一并迁移，否则无法重新生成。
  *
  * 用 base64 常量而不是 wrangler 的 `{type:"Data"}` 二进制导入，
  * 是为了免掉"加 rules + 写 declare module + 不同版本导入类型不一致"这一串麻烦。

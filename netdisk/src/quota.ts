@@ -37,8 +37,8 @@ const DEFAULT_CAP_BYTES = 9_500_000_000;
 
 /** measure 数据超过这个时长就算过期（后台自动重测） */
 export const MEASURE_STALE_MS = 6 * 3600 * 1000;
-/** 单次全桶 list 的最大页数（1000/页 ⇒ 上限 ~20 万对象） */
-const MEASURE_MAX_PAGES = 200;
+/** 单次全桶 list 的最大页数（1000/页 ⇒ 默认上限 ~100 万对象/前缀）。超出会打告警而非静默截断 */
+const MEASURE_MAX_PAGES = 1000;
 /** 上传腾空间时，每轮最多优先考虑从回收站删多少个（按 deleted_at 最旧优先） */
 const FREED_ROUND_SIZE = 60;
 /** 删对象并发车道（与 admin.ts 的 dropObjects 保持同量级） */
@@ -110,6 +110,7 @@ async function listAllObjects(st: StorageProvider): Promise<Map<string, { size: 
   // 探不到前缀（比如桶里只有零散文件）就退回常用的两个
   for (const prefix of prefixes.length ? prefixes : ["files/", "thumbs/"]) {
     let marker: string | undefined;
+    let hitLimit = false;
     for (let page = 0; page < MEASURE_MAX_PAGES; page++) {
       const res = await st.list({ prefix, marker, limit: 1000 });
       for (const e of res.entries ?? []) {
@@ -119,6 +120,11 @@ async function listAllObjects(st: StorageProvider): Promise<Map<string, { size: 
       if (!res.truncated) break;
       marker = res.nextMarker;
       if (!marker) break;
+      if (page === MEASURE_MAX_PAGES - 1) hitLimit = true;
+    }
+    // 之前静默截断 ⇒ 校准值偏小、可能顶穿硬上限。现在改为：到上限也继续翻，并打告警
+    if (hitLimit) {
+      console.error(`[quota] 前缀 "${prefix}" 对象数超过 ${MEASURE_MAX_PAGES * 1000}，校准值可能偏小，请检查存储规模`);
     }
   }
   return out;
@@ -220,10 +226,16 @@ export async function ensureHeadroom(
     // （不能"删一整批"：那会为了腾 6 MB 把 12 MB 的回收站全清空）
     for (const row of batch) {
       const { purged, keys } = await purgeFromTrash(env, me, [row.id]);
-      await dropObjects(st, keys);
+      const failed = await dropObjects(st, keys);
       if (purged > 0) {
         deleted += purged;
-        freed += sizeOf.get(row.id) ?? 0;
+        // 只有对象真的从 R2 删掉了才计入"已腾出空间"；否则 DB 已清但 R2 仍在，
+        // 误判腾够会让上传顶穿硬上限（dropObjects 返回的就是失败条数，不能吞）
+        if (failed === 0) {
+          freed += sizeOf.get(row.id) ?? 0;
+        } else {
+          console.error(`[quota] 删除回收站对象失败 ${failed} 个，key=${keys.join(",")}（DB 已清但 R2 仍在，未计入腾出空间）`);
+        }
       }
       if (freed >= required) break;
     }
