@@ -107,13 +107,15 @@ export default {
             console.error("[cron] 容量校准失败:", err);
           }
 
-          const { collectExpired } = await import("./filestore");
+          const { collectExpired, thumbKeysForFileKeys } = await import("./filestore");
           const { ids, keys } = await collectExpired(env);
           if (keys.length) {
             const { createStorageProvider } = await import("./storage");
             const { getSettings } = await import("./settings");
             const st = await createStorageProvider(env, await getSettings(env));
-            await Promise.all(keys.map((k) => st.delete(k).catch(() => {})));
+            // 连带删缩略图缓存（thumbs/<id>-<w>.jpg），否则小图永远占 R2 额度
+            const allKeys = keys.concat(thumbKeysForFileKeys(keys));
+            await Promise.all(allKeys.map((k) => st.delete(k).catch(() => {})));
           }
           console.log(
             `[cron ${event.cron}] 已彻底删除 ${ids.length} 个超过 ${30} 天的回收站文件`

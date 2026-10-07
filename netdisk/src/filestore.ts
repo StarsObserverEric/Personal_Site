@@ -511,6 +511,32 @@ function assertDeletableDir(dir: string): void {
   }
 }
 
+/**
+ * 缩略图宽度档位（正方形中心裁切）。单一定义源：admin.ts 的缩略图路由与前端
+ * admin.html 的 THUMB_W 都从这里取，改一处必须三处一起改。
+ * 前端把每张图按这些档位分别存成 `thumbs/<fileid>-<w>.jpg`，删除原文件时要一并清理。
+ */
+export const THUMB_WIDTHS = [128, 192, 256, 384, 512, 768];
+
+/**
+ * 文件被永久删除时，把它的全部缩略图缓存一并删掉。
+ * 文件对象 key 形如 `files/<id>`，缩略图 key 是 `thumbs/<id>-<w>.jpg`（w 见 THUMB_WIDTHS）。
+ * 不删的话这些小图会永远占 R2 额度（实测桶里 7057 张缩略图 ≈ 0.10 GiB），
+ * 且若日后重新上传得到相同 id 还会被旧缩略图误导。
+ *
+ * @param keys purge 返回的原始存储对象 key（形如 `files/<id>`），非 files/ 前缀的忽略。
+ */
+export function thumbKeysForFileKeys(keys: string[]): string[] {
+  const out: string[] = [];
+  for (const k of keys) {
+    if (!k.startsWith("files/")) continue;
+    const id = k.slice("files/".length);
+    if (!id) continue;
+    for (const w of THUMB_WIDTHS) out.push(`thumbs/${id}-${w}.jpg`);
+  }
+  return out;
+}
+
 /** 抹掉 rows 指向的文件行（连 shares / direct_links 一起），返回还要删哪些存储对象 */
 async function purgeRows(env: Env, ids: string[]): Promise<string[]> {
   const uniq = [...new Set(ids.filter((x) => typeof x === "string" && x))];

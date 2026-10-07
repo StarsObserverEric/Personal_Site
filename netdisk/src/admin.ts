@@ -12,7 +12,7 @@ import {
   listDir, makeDir, moveToTrash, listTrash, restoreFromTrash, purgeFromTrash,
   purgeFiles, purgeDir,
   storageUsage, renameFile, renameDir, moveEntries, listWritableDirs, ensureDirChain,
-  HttpError,
+  HttpError, THUMB_WIDTHS, thumbKeysForFileKeys,
 } from "./filestore";
 import { pickLang } from "./i18n";
 import { hashPassword } from "./public";
@@ -66,12 +66,9 @@ const json = (data: unknown, status = 200) =>
 const msg = (req: Request, zh: string, en: string) => (pickLang(req) === "zh" ? zh : en);
 
 /**
- * 缩略图宽度档位（正方形中心裁切）。
- * 缩略图模式下 .pv 是 80~320 CSS px 的正方形框（object-fit:cover 只显示中心一小块），
- * 2× 屏最多也就 640 设备像素 —— 所以 768 已经绰绰有余。
- * ⚠️ 前端 admin.html 里有一份同名常量 THUMB_W，两边必须保持一致。
+ * 缩略图宽度档位与「删除文件时连带删缩略图」的逻辑都集中在 filestore.ts
+ * （THUMB_WIDTHS / thumbKeysForFileKeys），本文件只消费，避免三处定义漂移。
  */
-export const THUMB_WIDTHS = [128, 192, 256, 384, 512, 768];
 /** 单张缩略图回传的体积上限（768×768 q72 的 JPEG 一般 ≤120KB，512KB 足够宽松） */
 const THUMB_MAX_UPLOAD = 512 * 1024;
 
@@ -602,7 +599,8 @@ export async function handleAdminApi(
       const { purged, keys } = await purgeFiles(env, me, ids);
       if (keys.length) {
         const st = await storage(env);
-        ctx.waitUntil(dropObjects(st, keys));
+        // 连带删掉该文件的所有缩略图缓存（thumbs/<id>-<w>.jpg），否则永远占 R2 额度
+        ctx.waitUntil(dropObjects(st, keys.concat(thumbKeysForFileKeys(keys))));
       }
       return json({ ok: true, purged });
     });
@@ -617,7 +615,8 @@ export async function handleAdminApi(
       const { purged, keys } = await purgeDir(env, me, body.path ?? "");
       if (keys.length) {
         const st = await storage(env);
-        ctx.waitUntil(dropObjects(st, keys));
+        // 连带删掉目录下每个文件的所有缩略图缓存
+        ctx.waitUntil(dropObjects(st, keys.concat(thumbKeysForFileKeys(keys))));
       }
       return json({ ok: true, purged });
     });
@@ -652,10 +651,10 @@ export async function handleAdminApi(
       const clean = ids.filter((x) => typeof x === "string");
       if (!clean.length) return json({ ok: true, purged: 0 });
       const { purged, keys } = await purgeFromTrash(env, me, clean);
-      // 存储对象删除放到后台，不阻塞响应
+      // 存储对象删除放到后台，不阻塞响应（连带删缩略图缓存）
       if (keys.length) {
         const st = await storage(env);
-        ctx.waitUntil(dropObjects(st, keys));
+        ctx.waitUntil(dropObjects(st, keys.concat(thumbKeysForFileKeys(keys))));
       }
       return json({ ok: true, purged });
     });

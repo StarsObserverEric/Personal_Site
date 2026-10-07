@@ -2566,17 +2566,6 @@ const THUMB_SETTLE_MS = 1000;
  * 不必再下一遍原图重裁；反过来"档位不够"也能一眼看出来，触发升档（见 queueThumbUpgrade）。
  */
 const THUMB_HAVE = new Map();
-/** 已经有的、且不小于 want 的最小档位（一张都没有就返回 0 ⇒ 得走原图） */
-function thumbFit(id, want){
-  const a = (THUMB_HAVE.get(id) || []).filter(w => w >= want);
-  return a.length ? Math.min.apply(null, a) : 0;
-}
-/** 手上最好的那档（可能低于 want）——拖动滑杆时先拿它顶住画面，
- *  既比"重新挂原图反复解码"便宜得多，也符合"停稳后再换成当前档位"的预期。 */
-function thumbBest(id){
-  const a = THUMB_HAVE.get(id) || [];
-  return a.length ? Math.max.apply(null, a) : 0;
-}
 function thumbMark(id, w){
   const a = THUMB_HAVE.get(id) || [];
   if(a.indexOf(w) < 0) THUMB_HAVE.set(id, a.concat(w));
@@ -2600,7 +2589,12 @@ function thumbNeed(){
 const thumbUrl = (id, w) => `/api/admin/thumbs/${encodeURIComponent(id)}?w=${w}`;
 const rawUrl = id => `/api/admin/files/${encodeURIComponent(id)}/raw`;
 
-/** 只给"视口附近"的图挂 src —— 远处保持空占位，避免一屏几十张大图同时解码 */
+/** 只给"视口附近"的图挂 src —— 远处保持空占位，避免一屏几十张大图同时解码。
+ *  Plan A（缩略图优先）：新鲜加载一律先读 R2 里已经生成好的缩略图（几十 KB 的小图），
+ *  只有在该图还没生成过缩略图（GET 返回 404）时才回落读原图，原图解码完再由 genThumb
+ *  顺手裁一张当前档位的小图回传存好。这样即使刷新页面 / 换目录，已经生成过缩略图的图
+ *  也永远走小图，不再反复拉几 MB 原图（之前 THUMB_HAVE 只在内存里、刷新即丢，等于每次
+ *  都重新拉原图 —— 这正是"大量图片文件夹打开很慢"的根因）。 */
 function mountThumbs(){
   const imgs = $$('#fm-list img.timg');
   if(!imgs.length) return;
@@ -2613,26 +2607,34 @@ function mountThumbs(){
         if(en.target.dataset.mounted) continue;
         en.target.dataset.mounted = '1';
         const id = en.target.dataset.thumb;
-        // 已经有缓存小图：够清晰（≥ want）就用它，一字节原图都不碰；
-        // 档位不够（上一趟按 80 生成的 128，现在要 384）就先挂手上最好的那档顶住画面 ——
-        // 直接回头挂原图的话，拖滑杆时每个 60ms 的重建都会重新解码一遍大图，页面立刻卡死；
-        // 随后 scheduleThumbUpgrade 在停稳后换成"当前档位"的清晰小图。
-        const fit = thumbFit(id, want) || thumbBest(id);
-        en.target.dataset.mode = fit ? 'thumb' : 'raw';
-        en.target.dataset.vw = fit || 0;
-        en.target.dataset.w  = fit || want;
-        en.target.src = fit ? thumbUrl(id, fit) : rawUrl(id);
-        if(fit && fit < want) scheduleThumbUpgrade();
+        // 先挂当前档位的缩略图：R2 里已有 7057 张，绝大多数图片直接命中小图；
+        // 加载失败（多半是这张图还没生成过缩略图）→ 回落原图，原图解码后由 genThumb
+        // 补生成，下次再进这个目录就直接走小图。回落只做一次，杜绝 onerror 死循环。
+        en.target.dataset.mode = 'thumb';
+        en.target.dataset.vw = '0';
+        en.target.dataset.w = want;
+        en.target.onerror = () => {
+          if(en.target.dataset.mode !== 'thumb') return;   // 已经回落过原图，不再处理
+          en.target.dataset.mode = 'raw';
+          en.target.onerror = null;
+          en.target.src = rawUrl(id);
+        };
+        en.target.src = thumbUrl(id, want);
       }
     }, { rootMargin: '700px 0px' });
     // load 事件不冒泡，只能挂在捕获阶段（整个页面只挂这一次）
     document.addEventListener('load', e => {
       const im = e.target;
       if(!im || !im.classList || !im.classList.contains('timg')) return;
-      // 挂载时挂的就是"手上最好的那档小图"（vw === w）：这个 load 是 im.src 换小图触发的，
-      // 再排一次等于把原图重下一遍、重裁一张一模一样的图 —— 拖动滑杆时每挂一张就多几 MB 流量。
-      // 真正要换档一律由 scheduleThumbUpgrade / queueThumbUpgrade 在**停稳后**统一做。
-      // 保底：万一上一次裁图上传失败了（vw 仍停在旧档、w 是目标档），两者不等 ⇒ 仍会重试。
+      if(im.dataset.mode === 'thumb'){
+        // 缩略图加载成功：记下档位并标记"已生成"，避免后续升档 / 重挂时重复生成同一张
+        const w = +im.dataset.w || 0;
+        im.dataset.vw = String(w);
+        if(w) thumbMark(im.dataset.thumb, w);
+        return;
+      }
+      // mode === 'raw'：原图加载成功（本就无缩略图，或缩略图 404 回落）。
+      // 既然原图都解码了，顺手裁一张当前档位的小图回传存好，下次直接走小图。
       if(im.dataset.vw && im.dataset.vw === im.dataset.w) return;
       queueThumbGen(im);
     }, true);
