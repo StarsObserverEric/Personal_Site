@@ -1,10 +1,19 @@
 name: Deploy netdisk (Worker)
 
-# 手动触发。首次部署前需先在 Cloudflare 建好：
-#   - R2 桶: cloud-r2pan
-#   - D1 库: cloud-r2pan  （建好后把 id 填进 netdisk/wrangler.jsonc 的 database_id）
-#   - Secret: 在 Worker 上设置 admin（后台管理密码）
-# 并确保 GitHub 仓库 Secret 里的 CF_API_TOKEN 具备 Workers 脚本 / D1 / R2 的编辑权限。
+# 手动触发（workflow_dispatch）。前置条件：
+#   1) R2 桶 cloud-r2pan                （仅按名字绑定，无需 ID）
+#   2) D1 库 cloud-r2pan                → Database ID 已回填 netdisk/wrangler.jsonc
+#                                         （10a5da07-2dbd-4944-a72b-a651070b645d）
+#   3) 自定义域 disk.starsobservereric.cc.cd
+#      → 由 netdisk/wrangler.jsonc 的 routes[].custom_domain=true 在部署时自动绑定
+#   4) 后台登录密码 → GitHub Secret NETDISK_ADMIN_PASSWORD（上游登录页只校验密码，无用户名字段）
+#   5) （可选，防刷）Turnstile: 控制台申请后加 Worker 变量 turnstile_sitekey / turnstile_secret
+#
+# ── 安全铁律（踩过的坑，务必保留这段注释）──────────────────────────────
+# 凭证只允许以 shell 变量形式存在于**单个 run 步骤内部**。
+# 绝不要把"运行时派生出来的"令牌值写进 $GITHUB_ENV 或 step 的 env: ——
+# GitHub 只会给**已注册的 Secret 值**打码；派生值不在注册表里，无法被打码，
+# 会被原样明文打印进该仓库的 Actions 日志（公开仓库 = 令牌对全网泄露）。
 on:
   workflow_dispatch:
 
@@ -20,33 +29,103 @@ jobs:
         with:
           node-version: 22
 
-      # 同 deploy.yml：剔除 Secret 值里可能混入的换行/空格，否则 wrangler 会报
-      # Headers.set: "..." is an invalid header value.
-      - name: Verify Cloudflare credentials
-        env:
-          RAW_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          RAW_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
-        run: |
-          TOKEN="$(printf '%s' "${RAW_TOKEN:-}" | tr -d '[:space:]')"
-          ACCOUNT="$(printf '%s' "${RAW_ACCOUNT:-}" | tr -d '[:space:]')"
-          echo "CF_API_TOKEN  : 原始 ${#RAW_TOKEN} 字符 -> 清理后 ${#TOKEN} 字符"
-          echo "CF_ACCOUNT_ID : 原始 ${#RAW_ACCOUNT} 字符 -> 清理后 ${#ACCOUNT} 字符"
-          if ! printf '%s' "$ACCOUNT" | grep -Eq '^[0-9a-f]{32}$'; then
-            echo "::error::CF_ACCOUNT_ID 格式非法（清理后 ${#ACCOUNT} 字符，应为 32 位小写十六进制）"
-            exit 1
-          fi
-          if ! printf '%s' "$TOKEN" | grep -Eq '^[A-Za-z0-9_-]{38,48}$'; then
-            echo "::error::CF_API_TOKEN 格式非法（清理后 ${#TOKEN} 字符）"
-            exit 1
-          fi
-          {
-            echo "CLOUDFLARE_API_TOKEN=$TOKEN"
-            echo "CLOUDFLARE_ACCOUNT_ID=$ACCOUNT"
-          } >> "$GITHUB_ENV"
-          echo "凭证格式校验通过"
-
       - name: Install dependencies
         run: npm ci
 
-      - name: Deploy Worker
-        run: npx wrangler deploy
+      # 顺序很重要：先 deploy 建出 cloud-r2pan 这个 Worker，再 secret put。
+      # 反过来的话 wrangler secret put 找不到目标 Worker 会直接失败。
+      # 另外本版 wrangler 的 secret put **没有** --remote 参数（加了会报 Unknown argument）。
+      - name: Deploy Worker and set admin password
+        env:
+          RAW_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          RAW_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
+          ADMIN_PW_NEW: ${{ secrets.NETDISK_ADMIN_PASSWORD }}
+          ADMIN_PW_OLD: ${{ secrets.NETDISK_ADMIN }}
+          ADMIN_USER: ${{ secrets.NETDISK_ADMIN_USERNAME }}
+          OAUTH_ALLOWED_USERS: ${{ secrets.OAUTH_ALLOWED_USERS }}
+          PUBLIC_SHARE: ${{ secrets.ALLOW_PUBLIC_SHARE }}
+          AGENT_MAINT: ${{ secrets.Agent_Maintenance }}
+        run: |
+          set -u
+          TOKEN="$(printf '%s' "${RAW_TOKEN:-}" | tr -d '[:space:]')"
+          ACCOUNT="$(printf '%s' "${RAW_ACCOUNT:-}" | tr -d '[:space:]')"
+
+          if ! printf '%s' "$ACCOUNT" | grep -Eq '^[0-9a-f]{32}$'; then
+            echo "::error::CF_ACCOUNT_ID 非法（清理后 ${#ACCOUNT} 字符，应为 32 位小写十六进制）"
+            exit 1
+          fi
+
+          # GitHub 的 Secret 输入框是 textarea，整块粘贴会连换行和其他文字一起存进来。
+          # 清理后若非纯令牌，就尝试从原始值里挑出唯一候选（只打印长度，绝不打印值）。
+          if ! printf '%s' "$TOKEN" | grep -Eq '^[A-Za-z0-9_-]{40,80}$'; then
+            CANDS="$(printf '%s' "$RAW_TOKEN" | tr -c 'A-Za-z0-9_-' '\n' | grep -E '^[A-Za-z0-9_-]{40,80}$' | grep -Ev '^[0-9a-f]{32}$' | sort -u)"
+            N="$(printf '%s' "$CANDS" | grep -c . )"
+            if [ "$N" = "1" ]; then
+              TOKEN="$(printf '%s' "$CANDS" | head -n1)"
+              echo "::warning::CF_API_TOKEN 不是纯令牌值，已自动提取唯一候选（${#TOKEN} 字符）。建议把 Secret 重设为纯值。"
+            else
+              echo "::error::CF_API_TOKEN 无法解析（候选 ${N} 个，清理后 ${#TOKEN} 字符）。请到 Cloudflare Roll 令牌后只粘贴那一串值。"
+              exit 1
+            fi
+          fi
+
+          export CLOUDFLARE_API_TOKEN="$TOKEN"
+          export CLOUDFLARE_ACCOUNT_ID="$ACCOUNT"
+          echo "凭证就绪（account ${#ACCOUNT} 字符 / token ${#TOKEN} 字符）"
+
+          echo "──── 1/2 部署 Worker ────"
+          npx wrangler deploy
+
+          echo "──── 2/2 写入登录凭证与 OAuth 白名单 ────"
+          PW="$(printf '%s' "${ADMIN_PW_NEW:-${ADMIN_PW_OLD:-}}" | tr -d '\r\n')"
+          if [ -z "$PW" ]; then
+            echo "::warning::未配置 NETDISK_ADMIN_PASSWORD（或 NETDISK_ADMIN），已跳过；请到 Cloudflare 控制台给 cloud-r2pan Worker 手动添加 admin 密钥。"
+          else
+            printf '%s' "$PW" | npx wrangler secret put admin
+            echo "::notice::登录密码已写入 Worker（长度 ${#PW}）。"
+          fi
+
+          # 管理员用户名 —— 与密码构成「双字段登录」；未配置时服务端只校验密码（向后兼容）
+          U="$(printf '%s' "${ADMIN_USER:-}" | tr -d '\r\n')"
+          if [ -z "$U" ]; then
+            echo "::warning::未配置 NETDISK_ADMIN_USERNAME，登录将只校验密码。"
+          else
+            printf '%s' "$U" | npx wrangler secret put admin_username
+            echo "::notice::登录用户名已写入 Worker（长度 ${#U}）。"
+          fi
+
+          # OAuth 登录白名单 —— 只有名单内账号可通过 GitHub 登录。
+          # 服务端若读不到这个变量会一律拒绝 OAuth 登录（fail closed），
+          # 所以这里给了兜底默认值，避免漏配导致"功能失效"而不是"被滥用"。
+          ALLOWED="$(printf '%s' "${OAUTH_ALLOWED_USERS:-StarsObserverEric}" | tr -d '\r\n')"
+          printf '%s' "$ALLOWED" | npx wrangler secret put oauth_allowed_users
+          echo "::notice::OAuth 登录白名单已写入：${ALLOWED}"
+
+          # 可选：把 /s/*、/d/*、/market 放行给未登录访客（默认不放行，即全部需要登录）
+          PS="$(printf '%s' "${PUBLIC_SHARE:-}" | tr -d '\r\n')"
+          if [ -n "$PS" ]; then
+            printf '%s' "$PS" | npx wrangler secret put allow_public_share
+            echo "::notice::已开启公开分享放行：allow_public_share=${PS}"
+          fi
+
+          # ── 附加维护账号（Agent_Maintenance）────────────────────────────
+          # 约定：Secret 值**两行** —— 第一行用户名，第二行密码。
+          # ⚠️ 这里同样要警惕 textarea 污染（上一行可能带 \r、可能多出空行），
+          #    所以先去掉 \r，再各取第一/第二个非空行（而不是死板地取第 1、2 行）。
+          # 只写长度、绝不打印明文：派生出来的 "user:pass" 不在 GitHub 的打码名单里。
+          MAINT="$(printf '%s' "${AGENT_MAINT:-}" | tr -d '\r')"
+          if [ -z "$MAINT" ]; then
+            echo "::warning::未配置 Agent_Maintenance，跳过附加维护账号。"
+          else
+            MUSER="$(printf '%s\n' "$MAINT" | grep -v '^[[:space:]]*$' | sed -n '1p' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+            MPASS="$(printf '%s\n' "$MAINT" | grep -v '^[[:space:]]*$' | sed -n '2p' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+            if [ -z "$MUSER" ] || [ -z "$MPASS" ]; then
+              echo "::warning::Agent_Maintenance 需要两行（第一行用户名、第二行密码），当前只有 ${#MUSER} / ${#MPASS} 字符，已跳过。"
+            elif printf '%s' "$MUSER" | grep -q ':'; then
+              echo "::error::维护账号用户名不能包含冒号（解析用冒号分隔）。"
+              exit 1
+            else
+              printf '%s:%s' "$MUSER" "$MPASS" | npx wrangler secret put extra_admins
+              echo "::notice::附加维护账号已写入（用户名 ${#MUSER} 字符 / 密码 ${#MPASS} 字符，权限等同主管理员，存储身份为主管理员）。"
+            fi
+          fi

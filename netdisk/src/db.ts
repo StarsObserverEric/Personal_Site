@@ -204,6 +204,38 @@ const MIGRATION_STATEMENTS: string[] = [
   // ═══════════ WebDAV 虚拟目录 ═══════════
   "ALTER TABLE files ADD COLUMN path TEXT NOT NULL DEFAULT '/'",
   "CREATE INDEX IF NOT EXISTS idx_files_path ON files(path)",
+  // ═══════════ 多用户 / 回收站（数据模型骨架）═══════════
+  // files.owner        —— 文件归属者（当前只有 admin；为将来开放多用户预留）
+  // files.deleted_at   —— 软删除时间戳；NULL = 在正常目录，非 NULL = 在回收站
+  // files.deleted_by   —— 谁删的（回收站可见性：管理员看全部，普通用户只看自己删的）
+  // files.original_path—— 进回收站前所在路径，用于"还原"
+  "ALTER TABLE files ADD COLUMN owner TEXT NOT NULL DEFAULT 'admin'",
+  "ALTER TABLE files ADD COLUMN deleted_at INTEGER",
+  "ALTER TABLE files ADD COLUMN deleted_by TEXT",
+  "ALTER TABLE files ADD COLUMN original_path TEXT",
+  "CREATE INDEX IF NOT EXISTS idx_files_owner ON files(owner)",
+  "CREATE INDEX IF NOT EXISTS idx_files_deleted ON files(deleted_at)",
+  // directories.owner  —— 目录归属者
+  // directories.system —— 1 表示系统保留目录（Admin_Private / Recycle_Bin），不可删除/重命名
+  "ALTER TABLE directories ADD COLUMN owner TEXT NOT NULL DEFAULT 'admin'",
+  "ALTER TABLE directories ADD COLUMN system INTEGER NOT NULL DEFAULT 0",
+  // ═══════════ 媒体元数据（"详细信息"模式的扩展列）═══════════
+  // 说明：这些值**由前端在浏览器里探测后随上传一起提交**，Worker 只做校验与落库。
+  //   为什么不在服务端探测：Workers 运行时没有 ffprobe/ImageMagick 这类工具，
+  //   而浏览器原生就有解码器（Image / HTMLVideoElement），探测零成本、也不占 Worker CPU。
+  //   mtime      —— 文件的真实修改时间（File.lastModified），比 uploaded_at 更接近资源管理器的语义
+  //   width/height—— 图片、视频的像素尺寸
+  //   duration_ms—— 视频时长（毫秒）
+  //   fps        —— 视频帧率（可能为小数，例如 29.97）
+  //   v_bitrate  —— 视频轨码率（bit/s）
+  //   a_bitrate  —— 音频轨码率（bit/s）
+  "ALTER TABLE files ADD COLUMN mtime INTEGER",
+  "ALTER TABLE files ADD COLUMN width INTEGER",
+  "ALTER TABLE files ADD COLUMN height INTEGER",
+  "ALTER TABLE files ADD COLUMN duration_ms INTEGER",
+  "ALTER TABLE files ADD COLUMN fps REAL",
+  "ALTER TABLE files ADD COLUMN v_bitrate INTEGER",
+  "ALTER TABLE files ADD COLUMN a_bitrate INTEGER",
 ];
 
 /**
@@ -318,12 +350,27 @@ const EXPECTED_COLUMNS: { table: string; column: string }[] = [
   { table: "shares", column: "market_desc" },
   { table: "download_logs", column: "activation_code" },
   { table: "files", column: "path" },
+  { table: "files", column: "owner" },
+  { table: "files", column: "deleted_at" },
+  { table: "files", column: "deleted_by" },
+  { table: "files", column: "original_path" },
+  { table: "directories", column: "owner" },
+  { table: "directories", column: "system" },
+  { table: "files", column: "mtime" },
+  { table: "files", column: "width" },
+  { table: "files", column: "height" },
+  { table: "files", column: "duration_ms" },
+  { table: "files", column: "fps" },
+  { table: "files", column: "v_bitrate" },
+  { table: "files", column: "a_bitrate" },
 ];
 
 /** 预期的索引（同样是可能缺失的） */
 const EXPECTED_INDEXES: string[] = [
   "idx_shares_market",
   "idx_files_path",
+  "idx_files_owner",
+  "idx_files_deleted",
 ];
 
 export interface SchemaStatus {

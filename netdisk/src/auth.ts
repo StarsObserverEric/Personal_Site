@@ -13,14 +13,23 @@ function getCookie(req: Request, name: string): string | null {
   return null;
 }
 
-/** 登录成功后签发会话 Cookie */
-export async function createSession(env: Env, secure = false): Promise<string> {
+/** 登录成功后签发会话 Cookie
+ *
+ *  sameSite 默认 Strict；但 **OAuth 回调必须传 "Lax"**：
+ *  回调是浏览器从 GitHub 跨站重定向过来的，SameSite=Strict 的 Cookie
+ *  不会在紧接着那次顶层导航里被带上，用户会"刚登录完又看到登录页"。
+ */
+export async function createSession(
+  env: Env,
+  secure = false,
+  sameSite: "Strict" | "Lax" = "Strict"
+): Promise<string> {
   const exp = Date.now() + SESSION_TTL_MS;
   const sig = await hmacB64url(env.admin, String(exp));
   const token = `${exp}.${sig}`;
   // Secure 标志仅在 HTTPS 下追加，兼容本地 http 调试
   const secureFlag = secure ? "; Secure" : "";
-  return `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_TTL_MS / 1000}${secureFlag}`;
+  return `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=${sameSite}; Max-Age=${SESSION_TTL_MS / 1000}${secureFlag}`;
 }
 
 /** 校验会话 Cookie，返回是否有效 */
@@ -40,6 +49,77 @@ export async function verifySession(req: Request, env: Env): Promise<boolean> {
 export function checkAdminKey(env: Env, input: string): boolean {
   if (!env.admin) return false;
   return safeEqual(input, env.admin);
+}
+
+/**
+ * 校验管理员用户名 —— 与 admin 密码组成「用户名 + 密码」双字段登录。
+ *
+ * 两条刻意的设计：
+ *  1. 未配置 `admin_username` 时返回 true：先加用户名后配、或忘了配，都不会把人锁在门外。
+ *  2. 用户名**大小写不敏感**。用户名不是秘密（GitHub 账号名本就大小写不敏感），
+ *     而大小写敏感换来的只是"记得当年怎么打"的风险 —— 收益为零、代价是可能进不去。
+ *     密码仍走严格的大小写敏感比较（safeEqual，恒定时间）。
+ */
+export function checkAdminUser(env: Env, input: string): boolean {
+  const expected = (env.admin_username ?? "").trim().toLowerCase();
+  if (!expected) return true;
+  return safeEqual((input ?? "").trim().toLowerCase(), expected);
+}
+
+/**
+ * 附加管理员账号：一行一组 `用户名:密码`（用 `extra_admins` 这个 Secret 注入）。
+ *
+ * 用途：给自动化 / 运维开一个独立入口，权限与主管理员完全等同，
+ * 但**存储身份仍然是主管理员**（见 vfs.ts 的 resolvePrincipal）——
+ * 因此用它会话上传的文件仍落在主管理员的个人文件夹里，不会在根目录
+ * 冒出一个新的"用户文件夹"。
+ *
+ * 为什么不做成"真正的多用户"：那是另一件事（要动 files.owner 的口径、
+ * 每个端点按 role 过滤……）。当前需求只是"多一个能随便测的入口"，
+ * 用别名方式实现最小，且不会污染数据模型。
+ */
+export function parseExtraAdmins(env: Env): { user: string; pass: string }[] {
+  const raw = env.extra_admins ?? "";
+  const out: { user: string; pass: string }[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith("#")) continue;
+    const i = t.indexOf(":");
+    if (i <= 0) continue;                        // 没有分隔符 / 空用户名 → 跳过
+    const user = t.slice(0, i).trim();
+    const pass = t.slice(i + 1);                 // 密码里允许再出现冒号
+    if (user && pass) out.push({ user, pass });
+  }
+  return out;
+}
+
+/**
+ * 校验一组登录凭证：主管理员 或 extra_admins 里的任意一组。
+ *
+ * ⚠️ 主账号分支**必须两个字段一起判断**：checkAdminUser 在未配置 admin_username 时
+ * 会返回 true（向后兼容"只设密码"），若写成短路判断就会退化成"密码对就行、用户名随便填"。
+ */
+export function verifyCredentials(env: Env, user: string, pass: string): boolean {
+  if (!pass) return false;
+  if (checkAdminUser(env, user) && checkAdminKey(env, pass)) return true;
+  const u = (user ?? "").trim().toLowerCase();
+  if (!u) return false;
+  for (const e of parseExtraAdmins(env)) {
+    // 用户名大小写不敏感（它不是秘密，没必要苛刻）；密码走恒定时间比较
+    if (e.user.toLowerCase() === u && safeEqual(pass, e.pass)) return true;
+  }
+  return false;
+}
+
+/**
+ * 敏感操作的"二次校验"密钥：主 admin 密码 或 任一附加账号的密码。
+ * 适用于那些要求用户重新输入密钥才能执行的动作（修复数据库 / 关闭两步验证等）——
+ * 附加账号是主人自己配置的，给它同等能力才符合"与管理员完全等同"的约定。
+ */
+export function verifyAdminReauth(env: Env, key: string): boolean {
+  if (!key) return false;
+  if (checkAdminKey(env, key)) return true;
+  return parseExtraAdmins(env).some((e) => safeEqual(key, e.pass));
 }
 
 /**

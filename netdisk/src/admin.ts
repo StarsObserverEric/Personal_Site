@@ -2,12 +2,28 @@ import type { Env } from "./types";
 import { ensureSchema, randomId, getSchemaStatus, repairDatabase } from "./db";
 import { generateCodes, makeBatchId, formatCodeStatus, findCodeByString } from "./codes";
 import { getSettings, updateSettings } from "./settings";
-import { checkAdminKey, createSession, verifySession, clientIp, rateLimitLogin, requireAdminIp } from "./auth";
+import { checkAdminKey, checkAdminUser, verifyCredentials, verifyAdminReauth, createSession, verifySession, clientIp, rateLimitLogin, requireAdminIp } from "./auth";
+import {
+  resolvePrincipal, homeDirOf, landingDirOf, liveScopeOf,
+  canWritePath, normalizePath,
+  PUBLIC_DIR, ADMIN_PRIVATE_DIR, RECYCLE_BIN_DIR,
+} from "./vfs";
+import {
+  listDir, makeDir, moveToTrash, listTrash, restoreFromTrash, purgeFromTrash,
+  purgeFiles, purgeDir,
+  storageUsage, renameFile, renameDir, moveEntries, listWritableDirs, ensureDirChain,
+  HttpError,
+} from "./filestore";
 import { pickLang } from "./i18n";
 import { hashPassword } from "./public";
 import { parseUA } from "./ua";
 import { encryptSecret, decryptSecret, totpGenerateSecret, totpVerify, totpUri, totpGenerateRecoveryCodes, sha256Hex, safeEqual } from "./crypto";
 import { createStorageProvider, type StorageProvider } from "./storage";
+import {
+  CF_FREE_STORAGE_BYTES, MEASURE_STALE_MS,
+  readMeasure, measureBucket, storageCap, ensureHeadroom,
+  listOrphans, purgeOrphans, purgeAllOrphans,
+} from "./quota";
 
 /** 懒加载 StorageProvider —— 每次需要时从 settings 构造（settings 有 5s 缓存，成本低） */
 let _storagePromise: Promise<StorageProvider> | null = null;
@@ -21,6 +37,25 @@ async function storage(env: Env): Promise<StorageProvider> {
   return _storagePromise;
 }
 
+/** 批量抹存储对象：**并发封顶**。
+ *
+ *  之前是一个 `Promise.all(keys.map(k => st.delete(k)))` 全打出去。本地 miniflare
+ *  实测 1600 个对象要 75s；线上更糟 —— Worker 会被拖到 CPU 超时，对象留在 R2 里
+ *  （文件行已经没了、列表里看不见，但配额还在白占）。16 并发是"跑得完又不打爆
+ *  连接预算"的折中：数据库那侧早就提交完了，这里只是收尾。 */
+const R2_DROP_CONCURRENCY = 16;
+async function dropObjects(st: StorageProvider, keys: string[]): Promise<void> {
+  if (!keys.length) return;
+  let i = 0;
+  const lanes = Array.from({ length: Math.min(R2_DROP_CONCURRENCY, keys.length) }, async () => {
+    while (i < keys.length) {
+      const k = keys[i++];
+      try { await st.delete(k); } catch { /* 对象本来就不在也算删成功 */ }
+    }
+  });
+  await Promise.all(lanes);
+}
+
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), {
     status,
@@ -29,6 +64,16 @@ const json = (data: unknown, status = 200) =>
 
 /** API 错误消息跟随请求语言（浏览器 fetch 自动携带 Accept-Language） */
 const msg = (req: Request, zh: string, en: string) => (pickLang(req) === "zh" ? zh : en);
+
+/**
+ * 缩略图宽度档位（正方形中心裁切）。
+ * 缩略图模式下 .pv 是 80~320 CSS px 的正方形框（object-fit:cover 只显示中心一小块），
+ * 2× 屏最多也就 640 设备像素 —— 所以 768 已经绰绰有余。
+ * ⚠️ 前端 admin.html 里有一份同名常量 THUMB_W，两边必须保持一致。
+ */
+export const THUMB_WIDTHS = [128, 192, 256, 384, 512, 768];
+/** 单张缩略图回传的体积上限（768×768 q72 的 JPEG 一般 ≤120KB，512KB 足够宽松） */
+const THUMB_MAX_UPLOAD = 512 * 1024;
 
 /** 安全解析 JSON body（失败返回空对象） */
 async function readJson<T>(req: Request): Promise<Partial<T>> {
@@ -48,6 +93,58 @@ function sanitizeName(name: string): string {
     .trim()
     .slice(0, 180);
   return cleaned || "unnamed";
+}
+
+/**
+ * 解析上传时前端探测出的媒体元数据（`X-File-Meta` 头，值为 base64(JSON)）。
+ *
+ * 为什么用 base64 而不是直接塞 JSON：HTTP 头只保证 ASCII 安全，而 base64 一劳永逸。
+ * 所有字段都做**白名单 + 数值范围**校验 —— 这些值来自客户端，最终会进 SQL 与界面，
+ * 任何一项不合法就整体丢弃（返回全 null）。宁可不显示元数据，也不写脏数据。
+ */
+function parseMediaMeta(raw: string | null): {
+  mtime: number | null;
+  width: number | null;
+  height: number | null;
+  duration_ms: number | null;
+  fps: number | null;
+  v_bitrate: number | null;
+  a_bitrate: number | null;
+} {
+  const empty = {
+    mtime: null, width: null, height: null, duration_ms: null,
+    fps: null, v_bitrate: null, a_bitrate: null,
+  };
+  if (!raw) return empty;
+  let obj: Record<string, unknown>;
+  try {
+    const bin = atob(raw);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    obj = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
+  } catch {
+    return empty;
+  }
+  /** 正整数校验：非数字 / 非有限 / ≤0 / 超上限 一律当作"没有" */
+  const num = (v: unknown, max: number): number | null => {
+    const n = typeof v === "number" ? v : Number(v);
+    if (!Number.isFinite(n) || n <= 0 || n > max) return null;
+    return Math.round(n);
+  };
+  const fpsRaw = typeof obj.fps === "number" ? obj.fps : Number(obj.fps);
+  const fps =
+    Number.isFinite(fpsRaw) && fpsRaw > 0 && fpsRaw <= 1000
+      ? Math.round(fpsRaw * 1000) / 1000
+      : null;
+  return {
+    mtime: num(obj.mtime, 4102444800000), // 上限 2100 年，防止乱填把界面撑坏
+    width: num(obj.width, 100000),
+    height: num(obj.height, 100000),
+    duration_ms: num(obj.duration_ms, 30 * 24 * 3600 * 1000),
+    fps,
+    v_bitrate: num(obj.v_bitrate, 1e11),
+    a_bitrate: num(obj.a_bitrate, 1e11),
+  };
 }
 
 /** 生成带文件名后缀的直链 URL：/d/{token}/{filename}，文件名做 URL 编码 */
@@ -89,6 +186,19 @@ async function writeLoginLog(
   }
 }
 
+/** 同源校验：跨站请求必带 Origin 或 Referer，二者存在时必须与本站 origin 一致；都没有（同站老客户端 / curl）则放行。 */
+function isSameOriginRequest(req: Request, url: URL): boolean {
+  const origin = req.headers.get("Origin");
+  if (origin) {
+    try { return new URL(origin).origin === url.origin; } catch { return false; }
+  }
+  const referer = req.headers.get("Referer");
+  if (referer) {
+    try { return new URL(referer).origin === url.origin; } catch { return false; }
+  }
+  return true;
+}
+
 export async function handleAdminApi(
   req: Request,
   env: Env,
@@ -99,6 +209,14 @@ export async function handleAdminApi(
   await ensureSchema(env);
   const method = req.method;
   const url = new URL(req.url);
+
+  // ── CSRF 同源校验 ── 仅对会改变状态的请求检查 Origin/Referer 是否同源；
+  // 跨站伪造请求（CSRF 表单 / fetch）会被 403 挡下。OAuth 回调是跨站 GET，不在此约束内。
+  if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+    if (!isSameOriginRequest(req, url)) {
+      return json({ error: msg(req, "请求来源不被信任（CSRF 防护）", "Untrusted request origin (CSRF guard)") }, 403);
+    }
+  }
 
   // ── IP 白名单门禁 ── 空 = 不限制；非空 = 仅白名单 IP 能访问所有 /api/admin/*
   {
@@ -116,10 +234,12 @@ export async function handleAdminApi(
     }
     if (!env.admin)
       return json({ error: msg(req, "未设置 admin 密钥，请先执行 npx wrangler secret put admin", "admin is not set. Run: npx wrangler secret put admin") }, 500);
-    const body = await readJson<{ key: string; code?: string }>(req);
-    if (!body.key || !checkAdminKey(env, body.key)) {
-      ctx.waitUntil(writeLoginLog(env, req, "login", "fail", "invalid_key"));
-      return json({ error: msg(req, "管理密钥错误", "Invalid admin key") }, 401);
+    const body = await readJson<{ key: string; code?: string; username?: string }>(req);
+    // 双字段校验：用户名（仅当配置了 admin_username）+ 密码，任一不符都拒绝。
+    // 提示语故意不区分"用户名错"还是"密码错"，避免泄露到底哪一半是对的。
+    if (!body.key || !verifyCredentials(env, body.username ?? "", body.key)) {
+      ctx.waitUntil(writeLoginLog(env, req, "login", "fail", "invalid_credentials"));
+      return json({ error: msg(req, "用户名或密码错误", "Invalid username or password") }, 401);
     }
 
     // 密码正确 —— 检查是否需要 2FA
@@ -232,6 +352,7 @@ export async function handleAdminApi(
   // 会话检查
   if (path === "/api/admin/session" && method === "GET") {
     const s = await getSettings(env);
+    const me = await resolvePrincipal(req, env);
     return json({
       ok: true,
       site_title: s.siteTitle,
@@ -239,6 +360,13 @@ export async function handleAdminApi(
       cloudflare_recovery: !!env.totp_recovery,
       recovery_remaining: s.totpRecoveryHash ? s.totpRecoveryHash.split(",").filter(Boolean).length : 0,
       ui_theme: s.uiTheme,
+      // ── 权限骨架 ── 前端据此决定侧边栏显示哪些分组（普通用户看不到安全中心/系统设置）
+      user: me?.name ?? "admin",
+      role: me?.role ?? "admin",
+      is_admin: (me?.role ?? "admin") === "admin",
+      home_dir: me ? homeDirOf(me) : "/",
+      landing_dir: me ? landingDirOf(me) : null,
+      system_dirs: { public: PUBLIC_DIR, admin_private: ADMIN_PRIVATE_DIR, recycle_bin: RECYCLE_BIN_DIR },
     });
   }
 
@@ -303,19 +431,29 @@ export async function handleAdminApi(
     });
   }
 
-  // ── 文件列表 ──────────────────────────────────────
+  // ── 文件列表（**扁平**视图：跨目录的全部在架文件）────────
+  // 与 /api/admin/dirs 的分工（两个接口不是重复实现，是两种视角）：
+  //   /api/admin/dirs?path=   目录浏览：当前目录的子目录 + 当前目录的文件（文件管理器用）
+  //   /api/admin/files        扁平全库：所有目录下的文件，按上传时间倒序（统计/搜索/批量用）
+  // 权限骨架：按身份过滤可见范围（管理员全部；普通用户只看自己 owner 的）。
+  // 回收站文件（deleted_at 非空）一律不出现在这里。
   if (path === "/api/admin/files" && method === "GET") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const scope = liveScopeOf(me);
     const { results } = await env.db.prepare(
-      `SELECT f.id, f.name, f.size, f.mime, f.uploaded_at,
+      `SELECT f.id, f.name, f.size, f.mime, f.uploaded_at, f.path, f.owner,
               (SELECT COUNT(*) FROM shares s WHERE s.file_id = f.id) AS share_count,
               (SELECT COALESCE(SUM(s.download_count), 0) FROM shares s WHERE s.file_id = f.id) AS download_count
-       FROM files f ORDER BY f.uploaded_at DESC`
-    ).all();
-    return json({ files: results ?? [] });
+       FROM files f WHERE ${scope.where} ORDER BY f.uploaded_at DESC`
+    ).bind(...scope.binds).all();
+    return json({ files: results ?? [], role: me.role, user: me.name, home_dir: homeDirOf(me) });
   }
 
   // ── 上传文件（原始流式 body，文件名放 X-File-Name 头） ──
   if (path === "/api/admin/upload" && method === "POST") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
     const rawName = req.headers.get("x-file-name");
     if (!rawName) return json({ error: msg(req, "缺少 X-File-Name 头", "Missing X-File-Name header") }, 400);
     let name: string;
@@ -324,10 +462,53 @@ export async function handleAdminApi(
     } catch {
       name = sanitizeName(rawName);
     }
+    // 目标目录：前端用 X-File-Path 指定（可含中文，需 decode）；
+    // 缺省落在**自己的个人文件夹**，不再是根目录 —— 根目录只放用户文件夹与系统目录。
+    const rawDir = req.headers.get("x-file-path") || homeDirOf(me);
+    let dir: string | null;
+    try {
+      dir = normalizePath(decodeURIComponent(rawDir));
+    } catch {
+      dir = normalizePath(rawDir);
+    }
+    if (!dir || !canWritePath(me, dir)) {
+      return json({ error: msg(req, "没有权限写入该目录", "No permission to write to this directory") }, 403);
+    }
+    // ── 硬上限：对齐 Cloudflare 免费额度 ────────────────────────
+    // 之前这里完全没有校验，"设了 9.95 GB"只是显示用的分母，传多大多都放过去。
+    // 现在按**桶内真实字节数**（定时 list 全桶累加，含孤儿对象与缩略图）算余量，
+    // 不够就自动彻底删除回收站里删除时间最久的那批文件，实在腾不出才 413。
+    const upSize = Number(req.headers.get("content-length") || 0) || 0;
+    if (upSize > 0) {
+      const hr = await ensureHeadroom(env, me, upSize);
+      if (!hr.ok) {
+        return json({
+          error: msg(
+            req,
+            `空间不足：Cloudflare 免费额度上限 ${(hr.cap / 1e9).toFixed(2)} GB，`
+              + `桶内已用 ${(hr.used / 1e9).toFixed(2)} GB，本次需 ${(hr.need / 1e9).toFixed(2)} GB。`
+              + `已自动清空回收站仍腾不出，请先删除一些文件。`,
+            `Not enough space: cap ${(hr.cap / 1e9).toFixed(2)} GB, used ${(hr.used / 1e9).toFixed(2)} GB, `
+              + `need ${(hr.need / 1e9).toFixed(2)} GB (trash already auto-purged). Delete some files first.`
+          ),
+          code: "storage_cap",
+        }, 413);
+      }
+    }
+    // 整目录上传时 dir 可能是还不存在的新子目录，这里把祖先链补上，
+    // 否则文件落库后父目录缺失、在目录树里点不进去。
+    try {
+      await ensureDirChain(env, me, dir);
+    } catch (e: any) {
+      return json({ error: msg(req, e?.message || "建目录失败", e?.message || "Failed to create directories") }, 403);
+    }
     if (!req.body) return json({ error: msg(req, "请求体为空", "Empty request body") }, 400);
     const id = randomId(14);
     const key = `files/${id}`;
     const mime = req.headers.get("content-type") || "application/octet-stream";
+    // 前端探测出的媒体元数据（图片宽高 / 视频时长·帧率·码率等）。
+    // 探测放在浏览器做：Worker 里没有 ffprobe，而浏览器自带解码器，零额外成本。
+    const meta = parseMediaMeta(req.headers.get("x-file-meta"));
     const st = await storage(env);
     let resultSize = 0;
     try {
@@ -342,9 +523,14 @@ export async function handleAdminApi(
     // ── Bug #4 修复：D1 写入失败时清理已写入的 storage 对象 ──
     try {
       await env.db.prepare(
-        "INSERT INTO files(id, key, name, size, mime, uploaded_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6)"
+        `INSERT INTO files(id, key, name, size, mime, path, owner, uploaded_at,
+                           mtime, width, height, duration_ms, fps, v_bitrate, a_bitrate)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)`
       )
-        .bind(id, key, name, resultSize, mime, Date.now())
+        .bind(
+          id, key, name, resultSize, mime, dir, me.name, Date.now(),
+          meta.mtime, meta.width, meta.height, meta.duration_ms, meta.fps, meta.v_bitrate, meta.a_bitrate
+        )
         .run();
     } catch (dbErr) {
       ctx.waitUntil(st.delete(key).catch(() => {}));
@@ -354,20 +540,329 @@ export async function handleAdminApi(
     return json({ ok: true, id, name, size: resultSize }, 201);
   }
 
-  // ── 删除文件（连带存储对象、分享、日志） ──────────
+  // ═══════════ 文件管理器：目录 / 回收站 ═══════════
+  // 统一把 HttpError 转成 JSON 响应，避免每个分支都写一遍 try/catch
+  const withHttpError = async (fn: () => Promise<Response>): Promise<Response> => {
+    try {
+      return await fn();
+    } catch (e: unknown) {
+      if (e instanceof HttpError) return json({ error: msg(req, e.message, e.message) }, e.status);
+      throw e;
+    }
+  };
+
+  // ── 列目录（按身份过滤 + 排除回收站文件）──────────
+  if (path === "/api/admin/dirs" && method === "GET") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const dir = new URL(req.url).searchParams.get("path") || "/";
+    return withHttpError(async () => json({ ok: true, ...(await listDir(env, me, dir)) }));
+  }
+
+  // ── 新建文件夹 ────────────────────────────────────
+  if (path === "/api/admin/dirs" && method === "POST") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const body = await readJson<{ parent?: string; name?: string }>(req);
+    return withHttpError(async () => {
+      const dir = await makeDir(env, me, body.parent ?? "/", body.name ?? "");
+      return json({ ok: true, dir });
+    });
+  }
+
+  // ── 删除目录（递归软删除 → 回收站）────────────────
+  if (path === "/api/admin/dirs/delete" && method === "POST") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const body = await readJson<{ path?: string }>(req);
+    return withHttpError(async () => {
+      const n = await moveToTrash(env, me, { dirPaths: [body.path ?? ""] });
+      return json({ ok: true, trashed: n });
+    });
+  }
+
+  // ── 批量删除文件 → 回收站 ─────────────────────────
+  if (path === "/api/admin/files/delete" && method === "POST") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const body = await readJson<{ ids?: string[] }>(req);
+    const ids = Array.isArray(body.ids) ? body.ids.filter((x) => typeof x === "string") : [];
+    if (!ids.length) return json({ error: msg(req, "缺少 ids", "Missing ids") }, 400);
+    return withHttpError(async () => json({ ok: true, trashed: await moveToTrash(env, me, { fileIds: ids }) }));
+  }
+
+  // ── 彻底删除文件（不可恢复，连存储对象一起抹掉）──────────────
+  if (path === "/api/admin/files/purge" && method === "DELETE") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const body = await readJson<{ ids?: string[] }>(req);
+    const ids = Array.isArray(body.ids) ? body.ids.filter((x) => typeof x === "string") : [];
+    if (!ids.length) return json({ error: msg(req, "缺少 ids", "Missing ids") }, 400);
+    return withHttpError(async () => {
+      const { purged, keys } = await purgeFiles(env, me, ids);
+      if (keys.length) {
+        const st = await storage(env);
+        ctx.waitUntil(dropObjects(st, keys));
+      }
+      return json({ ok: true, purged });
+    });
+  }
+
+  // ── 彻底删除目录（连同子孙，不可恢复）────────────────────
+  if (path === "/api/admin/dirs/purge" && method === "DELETE") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const body = await readJson<{ path?: string }>(req);
+    return withHttpError(async () => {
+      const { purged, keys } = await purgeDir(env, me, body.path ?? "");
+      if (keys.length) {
+        const st = await storage(env);
+        ctx.waitUntil(dropObjects(st, keys));
+      }
+      return json({ ok: true, purged });
+    });
+  }
+
+  // ── 回收站：列表 ──────────────────────────────────
+  if (path === "/api/admin/trash" && method === "GET") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    return withHttpError(async () => json({ ok: true, items: await listTrash(env, me) }));
+  }
+
+  // ── 回收站：还原 ──────────────────────────────────
+  if (path === "/api/admin/trash/restore" && method === "POST") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const body = await readJson<{ ids?: string[] }>(req);
+    const ids = Array.isArray(body.ids) ? body.ids.filter((x) => typeof x === "string") : [];
+    return withHttpError(async () => json({ ok: true, restored: await restoreFromTrash(env, me, ids) }));
+  }
+
+  // ── 回收站：彻底删除（不可恢复，会真的删存储对象）──
+  if (path === "/api/admin/trash" && method === "DELETE") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const url = new URL(req.url);
+    const emptyAll = url.searchParams.get("all") === "1";
+    return withHttpError(async () => {
+      const ids = emptyAll
+        ? (await listTrash(env, me)).map((t) => t.id)
+        : (await readJson<{ ids?: string[] }>(req).catch(() => ({ ids: [] as string[] }))).ids ?? [];
+      const clean = ids.filter((x) => typeof x === "string");
+      if (!clean.length) return json({ ok: true, purged: 0 });
+      const { purged, keys } = await purgeFromTrash(env, me, clean);
+      // 存储对象删除放到后台，不阻塞响应
+      if (keys.length) {
+        const st = await storage(env);
+        ctx.waitUntil(dropObjects(st, keys));
+      }
+      return json({ ok: true, purged });
+    });
+  }
+
+  // ── 原始内容：仅登录会话可访问，供"缩略图模式"预览 ────────
+  // 为什么不复用 /d/{token}：直链是**公开**入口（不要求登录），
+  // 而缩略图必须在"未登录看不到任何文件"的前提下工作 —— 所以要有这条**会鉴权**的原始内容通道。
+  // 也刻意不返回 Content-Disposition: attachment：预览要 inline。
+  const rawMatch = /^\/api\/admin\/files\/([^/]+)\/raw$/.exec(path);
+  if (rawMatch && method === "GET") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const f = await env.db
+      .prepare("SELECT id, key, name, mime, owner FROM files WHERE id = ?1 AND deleted_at IS NULL")
+      .bind(rawMatch[1])
+      .first<{ id: string; key: string; name: string; mime: string; owner: string }>();
+    if (!f) return json({ error: msg(req, "文件不存在", "File not found") }, 404);
+    // 可见性：普通用户只能取自己名下的对象（管理员不限）
+    if (me.role !== "admin" && f.owner !== me.name) {
+      return json({ error: msg(req, "无权访问该文件", "Forbidden") }, 403);
+    }
+    const st = await storage(env);
+    const obj = await st.get(f.key);
+    if (!obj) return json({ error: msg(req, "存储对象不存在", "Object not found") }, 404);
+    const headers = new Headers();
+    headers.set("content-type", f.mime || "application/octet-stream");
+    // cache-control 不区分 inline/attachment：预览要走 HTTP 缓存，下载也一样吃缓存。
+    headers.set("cache-control", "private, max-age=3600");
+    headers.set("x-content-type-options", "nosniff");
+    // ?dl=1 ⇒ 存盘下载（附加 attachment）；不带则是 inline 预览（缩略图/相册看大图都要 inline）。
+    const asAttachment = new URL(req.url).searchParams.get("dl") === "1";
+    headers.set(
+      "content-disposition",
+      asAttachment
+        ? `attachment; filename*=UTF-8''${encodeURIComponent(f.name)}`
+        : `inline; filename*=UTF-8''${encodeURIComponent(f.name)}`
+    );
+    return new Response(obj.body as ReadableStream, { headers });
+  }
+
+  // ── 缩略图缓存（浏览器 canvas 裁好的小图，之后预览只读这张小图）──
+  // 为什么需要：缩略图模式原本 <img src="/api/admin/files/:id/raw">，也就是为了在
+  // 160~320px 的方格里显示中心一小块，却把整张原图（常见 4000×3000、甚至 6000×4000
+  // 的几 MB 大图）下载 + 全图解码；一屏几十张直接把标签页卡死、流量也爆。
+  // 做法：浏览器**第一次**显示某张图时，顺手用 canvas 裁一张"中心正方形 + 低分辨率"
+  // 的 JPEG 回传存进存储（POST），之后这个目录再打开就直接读这张几十 KB 的小图
+  // （GET），解码像素少 1~2 个数量级。
+  const thumbMatch = /^\/api\/admin\/thumbs\/([A-Za-z0-9_-]{1,40})$/.exec(path);
+  if (thumbMatch) {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const id = thumbMatch[1];
+    const w = Number(new URL(req.url).searchParams.get("w") || 0);
+    if (!THUMB_WIDTHS.includes(w)) return json({ error: msg(req, "非法的缩略图宽度", "Bad thumb width") }, 400);
+    const key = `thumbs/${id}-${w}.jpg`;
+    const st = await storage(env);
+
+    if (method === "GET") {
+      const o = await st.get(key);
+      if (!o) return json({ error: msg(req, "缩略图尚未生成", "Thumb not ready") }, 404);
+      const h = new Headers();
+      h.set("content-type", "image/jpeg");
+      h.set("cache-control", "private, max-age=31536000, immutable");
+      h.set("x-content-type-options", "nosniff");
+      return new Response(o.body, { headers: h });
+    }
+
+    if (method === "POST") {
+      // 只能给"自己名下（管理员不限）且真实存在"的文件写缩略图，防止拿 id 乱写存储
+      const f = await env.db
+        .prepare("SELECT id, owner FROM files WHERE id = ?1 AND deleted_at IS NULL")
+        .bind(id)
+        .first<{ id: string; owner: string }>();
+      if (!f || (me.role !== "admin" && f.owner !== me.name)) {
+        return json({ error: msg(req, "无权写入该文件的缩略图", "Forbidden") }, 403);
+      }
+      const body = await req.arrayBuffer();
+      if (body.byteLength > THUMB_MAX_UPLOAD) {
+        return json({ error: msg(req, "缩略图体积超限", "Thumb too large") }, 413);
+      }
+      // 魔数校验：必须 JPEG（FF D8 FF），不然后端拿到的可能是任意字节
+      const head = new Uint8Array(body, 0, Math.min(3, body.byteLength));
+      if (!(head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff)) {
+        return json({ error: msg(req, "缩略图只接受 JPEG", "JPEG only") }, 400);
+      }
+      await st.put(key, body, { contentType: "image/jpeg" });
+      return json({ ok: true, id, w, size: body.byteLength });
+    }
+  }
+
+  // ── 容量统计（概览页容量卡片 + 按用户/按类型两张饼图）──
+  if (path === "/api/admin/storage-usage" && method === "GET") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    return withHttpError(async () => {
+      const u: any = await storageUsage(env, me);
+      // 桶内真实占用（含孤儿对象与缩略图缓存）—— Cloudflare 只按这个收钱
+      const m = await readMeasure(env);
+      u.real_bytes = m?.bytes ?? 0;
+      u.real_objects = m?.objects ?? 0;
+      u.real_at = m?.at ?? 0;
+      u.real_stale = !m?.at || Date.now() - m.at > MEASURE_STALE_MS;
+      u.cap_bytes = await storageCap(env);
+      u.cf_free_bytes = CF_FREE_STORAGE_BYTES;
+      // 校准值过期就后台重测一次（本次返回用的还是旧值，下次打开就是准的）
+      if (u.real_stale) {
+        ctx.waitUntil(
+          measureBucket(env).catch((err) => console.error("storage re-measure failed:", err))
+        );
+      }
+      return json({ ok: true, ...u });
+    });
+  }
+
+  // ── 校准桶内真实占用（概览/容量页发现过期时后台自动跑，这里给手动触发）──
+  if (path === "/api/admin/storage/measure" && method === "POST") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    return withHttpError(async () => {
+      const m = await measureBucket(env);
+      return json({ ok: true, bytes: m.bytes, objects: m.objects, at: m.at, cap: await storageCap(env) });
+    });
+  }
+
+  // ── 孤儿对象（R2 里有、files 表里查不到）：白占 Cloudflare 额度 ──
+  //   GET  = 只扫描，报告有多少个 / 多少字节（不动任何东西）
+  //   POST = { apply: true } 时才真删
+  if (path === "/api/admin/orphans" && method === "GET") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    return withHttpError(async () => json({ ok: true, ...(await listOrphans(env)) }));
+  }
+  if (path === "/api/admin/orphans" && method === "POST") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const body = await readJson<{ apply?: boolean; keys?: string[] }>(req).catch(() => ({ apply: false, keys: [] as string[] }));
+    // apply 缺省为 true：既然是孤儿（D1 查不到），留着只会一直计费。
+    // 想只扫描不删就传 { apply: false }；
+    // 传了 keys 就只删这几条（小步确认用），不传就删光扫出来的全部孤儿。
+    if (!body.apply) return json({ ok: true, ...(await listOrphans(env)) });
+    const keys = Array.isArray(body.keys) ? body.keys.filter((k) => typeof k === "string") : [];
+    return withHttpError(async () => {
+      const r = keys.length ? await purgeOrphans(env, keys) : await purgeAllOrphans(env);
+      // 删完顺手重新校准，容量卡片立刻反映真实占用
+      ctx.waitUntil(measureBucket(env).catch(() => {}));
+      return json({ ok: true, deleted: r.deleted, bytes: r.bytes, skipped: r.skipped, failed: r.failed });
+    });
+  }
+
+  // ── 重命名文件 ────────────────────────────────────
+  if (path === "/api/admin/files/rename" && method === "POST") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const body = await readJson<{ id?: string; name?: string }>(req);
+    if (!body.id || !body.name) return json({ error: msg(req, "缺少 id 或 name", "Missing id or name") }, 400);
+    // 先取成常量再进闭包：TS 的类型收窄在回调里会失效（对象属性是可变的）
+    const id = body.id, newName = body.name;
+    return withHttpError(async () => json({ ok: true, name: await renameFile(env, me, id, newName) }));
+  }
+
+  // ── 重命名目录 ────────────────────────────────────
+  if (path === "/api/admin/dirs/rename" && method === "POST") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const body = await readJson<{ path?: string; name?: string }>(req);
+    if (!body.path || !body.name) return json({ error: msg(req, "缺少 path 或 name", "Missing path or name") }, 400);
+    return withHttpError(async () => json({ ok: true, path: await renameDir(env, me, body.path!, body.name!) }));
+  }
+
+  // ── 可写目录清单（「移动到…」下拉菜单用）──────────────
+  if (path === "/api/admin/dirs/writable" && method === "GET") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    return json({ ok: true, paths: await listWritableDirs(env, me) });
+  }
+
+  // ── 移动（文件 + 目录统一入口）──────────────────────
+  // 权限：管理员可移动任意用户的任意条目到任意目录（含跨用户子空间）；
+  //       普通用户只能在自己个人文件夹内移动。详见 filestore.assertMovable*。
+  // 说明：`/api/admin/files/move` 是上一版的入口，保留为**别名**，两个路径共用同一实现，
+  //       避免出现"两套逻辑各修一半"的情况。
+  if ((path === "/api/admin/move" || path === "/api/admin/files/move") && method === "POST") {
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    const body = await readJson<{ ids?: string[]; dirs?: string[]; target?: string }>(req);
+    const ids = Array.isArray(body.ids) ? body.ids.filter((x) => typeof x === "string") : [];
+    const dirPaths = Array.isArray(body.dirs) ? body.dirs.filter((x) => typeof x === "string") : [];
+    if (!ids.length && !dirPaths.length) {
+      return json({ error: msg(req, "缺少 ids 或 dirs", "Missing ids or dirs") }, 400);
+    }
+    return withHttpError(async () =>
+      json({ ok: true, ...(await moveEntries(env, me, ids, dirPaths, body.target ?? "")) })
+    );
+  }
+
+  // ── 删除文件 → 移入回收站（软删除，30 天内可还原）──
+  // 原实现是"硬删除 + 立刻抹掉存储对象"，没有后悔药。
+  // 现在一律先进回收站；要真正抹掉请走 DELETE /api/admin/trash。
   const fileMatch = /^\/api\/admin\/files\/([^/]+)$/.exec(path);
   if (fileMatch && method === "DELETE") {
-    const fileId = fileMatch[1];
-    const file = await env.db.prepare("SELECT key FROM files WHERE id = ?1").bind(fileId).first<{ key: string }>();
-    if (!file) return json({ error: msg(req, "文件不存在", "File not found") }, 404);
-    await env.db.batch([
-      env.db.prepare("DELETE FROM shares WHERE file_id = ?1").bind(fileId),
-      env.db.prepare("DELETE FROM download_logs WHERE file_id = ?1").bind(fileId),
-      env.db.prepare("DELETE FROM files WHERE id = ?1").bind(fileId),
-    ]);
-    const st = await storage(env);
-    ctx.waitUntil(st.delete(file.key).catch(() => {}));
-    return json({ ok: true });
+    const me = await resolvePrincipal(req, env);
+    if (!me) return json({ error: "unauthorized" }, 401);
+    return withHttpError(async () => {
+      const n = await moveToTrash(env, me, { fileIds: [fileMatch[1]] });
+      return json({ ok: true, trashed: n });
+    });
   }
 
   // ── 存储浏览（S3 / R2 bucket 内对象列表） ─────────
@@ -378,6 +873,46 @@ export async function handleAdminApi(
     try {
       const st = await storage(env);
       const result = await st.list({ prefix, marker, limit });
+      // ── 用对象 key 反查 files 表，给存储浏览补上"人能看懂"的信息 ──
+      // 背景：R2/S3 里的对象 key 是 `files/<随机id>`，真正的文件名在 D1 的 files.name，
+      // 所以存储浏览默认只能看到一串乱码，与"文件"页对不上。这里按 key 批量回查，
+      // 让前端能直接显示真实文件名 + 上传者 + 上传时间 + 所在位置，并一键跳到文件页。
+      // 查不到（孤儿对象 / 已被硬删但对象还在）时 record 为 null，前端退化为显示 key。
+      try {
+        const entries = result.entries ?? [];
+        const byKey = new Map<string, any>();
+        const keys = entries.filter((e) => !e.isDir).map((e) => e.key);
+        // 分批（每批 100 个占位符）避开 SQLite 变量数上限
+        for (let i = 0; i < keys.length; i += 100) {
+          const chunk = keys.slice(i, i + 100);
+          if (!chunk.length) break;
+          const ph = chunk.map(() => "?").join(",");
+          const { results }: any = await env.db
+            .prepare(
+              `SELECT id, key, name, owner, path, uploaded_at, deleted_at
+               FROM files WHERE key IN (${ph})`
+            )
+            .bind(...chunk)
+            .all();
+          for (const row of results ?? []) byKey.set(String(row.key), row);
+        }
+        for (const e of entries) {
+          const rec = e.isDir ? null : byKey.get(e.key);
+          (e as any).record = rec
+            ? {
+                id: rec.id,
+                name: rec.name,
+                owner: rec.owner,
+                path: rec.path,
+                uploaded_at: rec.uploaded_at,
+                in_trash: !!rec.deleted_at,
+              }
+            : null;
+        }
+      } catch (dbErr) {
+        // 反查失败不能拖垮整个列表：保持原样返回，前端退化显示 key
+        console.error("storage/objects: file lookup failed:", dbErr);
+      }
       return json({ ok: true, ...result, kind: st.kind });
     } catch (e: any) {
       return json({ ok: false, error: msg(req, `列存储对象失败: ${e?.message ?? e}`, `Storage list failed: ${e?.message ?? e}`) }, 500);
@@ -738,7 +1273,7 @@ export async function handleAdminApi(
   // ── 2FA Setup：生成新 secret（未启用，需要 verify+enable 才生效） ──
   if (path === "/api/admin/2fa/setup" && method === "POST") {
     const body = await readJson<{ admin_key: string }>(req);
-    if (!body.admin_key || !checkAdminKey(env, body.admin_key)) {
+    if (!body.admin_key || !verifyAdminReauth(env, body.admin_key)) {
       return json({ error: msg(req, "管理密钥错误", "Invalid admin key") }, 401);
     }
     // 如果已经启用，需要先 disable 再 setup（或者覆盖）
@@ -755,7 +1290,7 @@ export async function handleAdminApi(
   // ── 2FA Enable：验证通过后写入 settings（加密存储）并生成恢复码 ──
   if (path === "/api/admin/2fa/enable" && method === "POST") {
     const body = await readJson<{ admin_key: string; code: string; secret: string }>(req);
-    if (!body.admin_key || !checkAdminKey(env, body.admin_key)) {
+    if (!body.admin_key || !verifyAdminReauth(env, body.admin_key)) {
       return json({ error: msg(req, "管理密钥错误", "Invalid admin key") }, 401);
     }
     if (!/^[A-Z2-7]{16,}$/.test((body.secret || "").toUpperCase())) {
@@ -788,7 +1323,7 @@ export async function handleAdminApi(
   // ── 2FA Disable：关闭 2FA（需验证 admin key） ──
   if (path === "/api/admin/2fa/disable" && method === "POST") {
     const body = await readJson<{ admin_key: string }>(req);
-    if (!body.admin_key || !checkAdminKey(env, body.admin_key)) {
+    if (!body.admin_key || !verifyAdminReauth(env, body.admin_key)) {
       return json({ error: msg(req, "管理密钥错误", "Invalid admin key") }, 401);
     }
     await updateSettings(env, {
@@ -802,7 +1337,7 @@ export async function handleAdminApi(
   // ── 重新生成恢复码（覆盖旧的，旧的全部失效） ──
   if (path === "/api/admin/2fa/regen-recovery" && method === "POST") {
     const body = await readJson<{ admin_key: string }>(req);
-    if (!body.admin_key || !checkAdminKey(env, body.admin_key)) {
+    if (!body.admin_key || !verifyAdminReauth(env, body.admin_key)) {
       return json({ error: msg(req, "管理密钥错误", "Invalid admin key") }, 401);
     }
     const s = await getSettings(env);
@@ -991,6 +1526,11 @@ export async function handleAdminApi(
     return json({
       site_title: s.siteTitle,
       traffic_limit_gb: s.trafficLimitBytes / 1024 ** 3,
+      // 存储硬上限（十进制字节，与 Cloudflare 免费额度同一口径）。
+      // 上传前会按"桶内真实字节数"校验；回收站也会在需要时自动被清空来腾位置。
+      storage_cap_bytes: await storageCap(env),
+      storage_cap_gb: (await storageCap(env)) / 1e9,
+      cf_free_bytes: CF_FREE_STORAGE_BYTES,
       max_downloads_per_ip: s.maxDownloadsPerIp,
       count_window_hours: s.countWindowHours,
       auto_ban: s.autoBan,
@@ -1056,6 +1596,16 @@ export async function handleAdminApi(
     const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null);
     const gb = num(body.traffic_limit_gb);
     if (gb !== null) patch.traffic_limit_bytes = String(Math.round(gb * 1024 ** 3));
+    // 存储硬上限：出厂必须**小于** Cloudflare 免费额度 10 GB（十进制）。
+    // 上限 9.9 GB 也放行（毕竟余量 100 MB 已经很紧），但 ≥10 GB 一律拒绝 ——
+    // 那是钱的事，不能赌。
+    const capBytes = num(body.storage_cap_bytes);
+    if (capBytes !== null) patch.storage_cap_bytes = String(Math.round(capBytes));
+    const capGb = num(body.storage_cap_gb);
+    if (capGb !== null) patch.storage_cap_bytes = String(Math.round(capGb * 1e9));
+    if (patch.storage_cap_bytes && Number(patch.storage_cap_bytes) >= CF_FREE_STORAGE_BYTES) {
+      delete patch.storage_cap_bytes;
+    }
     const perIp = num(body.max_downloads_per_ip);
     if (perIp !== null) patch.max_downloads_per_ip = String(Math.floor(perIp));
     const window = num(body.count_window_hours);

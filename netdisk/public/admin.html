@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>cloud-r2pan</title>
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="https://starsobservereric.cc.cd/apple-touch-icon.png">
 <style>
 /* ═══════════════════════════════════════════════════════════
    默认主题：简洁暗色（无玻璃模糊）
@@ -49,6 +51,9 @@
   --tbl-divider: rgba(255,255,255,.06);
   --tbl-hover: rgba(255,255,255,.05);
   --tbl-row-border: rgba(255,255,255,.07);
+  /* 「定位过去」的高亮底色（暗色：蓝） */
+  --hl-strong: rgba(10,132,255,.38);
+  --hl-soft: rgba(10,132,255,.16);
   --dashed-border: rgba(255,255,255,.22);
   --dropzone-bg: rgba(255,255,255,.025);
   --dropzone-hover-bg: rgba(255,255,255,.06);
@@ -107,6 +112,9 @@
   --tbl-divider: rgba(0,0,0,.06);
   --tbl-hover: rgba(0,0,0,.04);
   --tbl-row-border: rgba(0,0,0,.07);
+  /* 「定位过去」的高亮底色（浅色：绿） */
+  --hl-strong: rgba(16,185,129,.26);
+  --hl-soft: rgba(16,185,129,.11);
   --dashed-border: rgba(0,0,0,.22);
   --dropzone-bg: rgba(0,0,0,.025);
   --dropzone-hover-bg: rgba(0,0,0,.05);
@@ -163,6 +171,9 @@
   --tbl-divider: rgba(0,0,0,.06);
   --tbl-hover: rgba(0,0,0,.04);
   --tbl-row-border: rgba(0,0,0,.07);
+  /* 「定位过去」的高亮底色（浅色：绿） */
+  --hl-strong: rgba(16,185,129,.26);
+  --hl-soft: rgba(16,185,129,.11);
   --dashed-border: rgba(0,0,0,.22);
   --dropzone-bg: rgba(0,0,0,.025);
   --dropzone-hover-bg: rgba(0,0,0,.05);
@@ -248,11 +259,200 @@ body {
 .o3 { width: 30vmax; height: 30vmax; background: var(--orb-3); top: 48%; left: 12%; animation-delay: -15s; opacity: var(--orb-opacity); }
 @keyframes drift { from { transform: translate(0,0) scale(1); } to { transform: translate(5vw,-6vh) scale(1.15); } }
 
-/* ── 布局 ─────────────────────────────── */
+/* ── 布局（横向拉满）───────────────────── */
 #app { position: relative; z-index: 1; }
-.wrap { max-width: 1280px; margin: 0 auto; padding: 20px clamp(14px, 3vw, 28px) 60px; }
-.layout { display: flex; gap: 20px; align-items: flex-start; }
+/* 取消原来的 max-width:1280px —— 默认铺满整个视口宽度。
+   只留左右内边距，且用 clamp 控制上限，避免超宽屏时元素贴边。 */
+.wrap { max-width: none; width: 100%; margin: 0; padding: 14px clamp(12px, 1.4vw, 40px) 60px; }
+.layout { display: flex; gap: 18px; align-items: flex-start; }
 .layout #view { flex: 1; min-width: 0; }
+
+/* ── 侧边栏折叠（顶栏左端按钮切换）────── */
+#app.sb-collapsed .sidebar { display: none; }
+#app.sb-collapsed .layout { gap: 0; }
+.sb-toggle {
+  flex: none; width: 38px; height: 38px; padding: 0; border-radius: 12px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--sf); border: 1px solid var(--stroke); color: var(--text);
+  font-size: 15px; line-height: 1; font-family: inherit;
+  transition: background .18s, transform .15s;
+}
+.sb-toggle:hover { background: var(--sf-strong); }
+.sb-toggle:active { transform: scale(.94); }
+
+/* ── 宽屏自动分列（统一机制：grid + JS 分列）──────────────
+   容器加 class="auto-cols"，JS 调用 flowColumns() 把直接子项按列优先均分进 .fcol。
+   列数由 --ui-cols 决定 —— 与文件管理器/其它列表页**共用同一个全局列数**。
+
+   ⚠️ 为什么**不再用 CSS `columns`（多列）**：
+   多列在内容放不下时会把卡片从中间切开，并把文字溢出压到下一张卡片上
+   （实测：设置页「下载市场作为首页」的说明文字压到下方卡片）。
+   grid 的每个单元格是独立的，永远不会重叠；代价是需要 JS 分列 —— 但反正列数
+   本来就是 JS 算出来的，这个代价为零。 */
+.auto-cols {
+  display: grid; gap: 14px; align-items: start;
+  grid-template-columns: repeat(var(--ui-cols, 1), minmax(0, 1fr));
+}
+.auto-cols > .fcol { min-width: 0; }
+
+/* ── 列数控制：不支持分列的页面整体压暗并禁用 ── */
+.colctl.off { opacity: .45; }
+
+/* ── 顶栏：列数调节（自动 + 手动）───────────────
+   中间显示的是"当前生效列数"；**点它**即把手动偏置归零，回到纯自动。
+   手动只调 **偏置（bias）**，不锁死具体数值 —— 这样拖动/缩放窗口时列数依旧会自动增减，
+   同时用户按 ± 也能在当前基础上增减：两种需求同时成立。 */
+.colctl {
+  display: flex; align-items: center; gap: 2px; padding: 3px 4px;
+  border-radius: 12px; background: var(--sf); border: 1px solid var(--stroke);
+}
+.colctl button {
+  flex: none; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 8px;
+  cursor: pointer; font-family: inherit; font-size: 16px; line-height: 1;
+  color: var(--text); background: transparent;
+  display: flex; align-items: center; justify-content: center;
+  transition: background .15s, transform .12s;
+}
+.colctl button:hover { background: var(--sf-strong); }
+.colctl button:active { transform: scale(.9); }
+.colctl button[disabled] { opacity: .3; pointer-events: none; }
+.colctl .lbl {
+  min-width: 42px; text-align: center; cursor: pointer; user-select: none;
+  font-size: 10.5px; color: var(--text-3); line-height: 1.15;
+}
+.colctl .lbl b {
+  display: block; font-size: 12.5px; font-weight: 700; color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.colctl .lbl.manual b { color: #fbbf24; }
+
+/* ── 文件管理器（资源管理器风格）─────────────── */
+.fm-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.crumb { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; font-size: 13px; min-width: 0; }
+.crumb a { color: var(--text-2); cursor: pointer; padding: 4px 8px; border-radius: 9px; white-space: nowrap; }
+.crumb a:hover { background: var(--sf-strong); color: var(--text); }
+.crumb .sep { color: var(--text-3); opacity: .6; }
+.fm-seg { display: inline-flex; padding: 3px; border-radius: 12px; background: var(--sf); border: 1px solid var(--stroke); }
+.fm-seg button {
+  border: 0; background: transparent; color: var(--text-2); font: inherit;
+  font-size: 12.5px; padding: 6px 12px; border-radius: 9px; cursor: pointer;
+}
+.fm-seg button.on { background: var(--sf-strong); color: var(--text); font-weight: 600; }
+.fm-sizer { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-3); }
+.fm-sizer input[type=range] { width: 120px; }
+
+/* 多列并行：列数 = JS 算出的自动值 + 手动偏置，写进 --ui-cols */
+.fmc { display: grid; gap: 14px; align-items: start; grid-template-columns: repeat(var(--ui-cols, 1), minmax(0, 1fr)); }
+.fmc > .fcol { min-width: 0; }
+
+/* 详细信息：固定表格布局 —— 列宽不足时截断而不是把整页撑破 */
+.fm-tbl { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+.fm-tbl th {
+  text-align: left; padding: 8px 9px; color: var(--text-3); font-weight: 600; font-size: 11.5px;
+  border-bottom: 1px solid var(--tbl-divider); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* 表头排序（Windows 资源管理器风格）：整格可点，箭头跟在列名后面
+   —— 换算过颜色变量，浅色/深色两套主题都用的是同一批 CSS 变量，不用写两份 */
+th.sortable { cursor: pointer; user-select: none; transition: color .12s, background .12s; }
+th.sortable:hover { color: var(--text); background: var(--tbl-hover); }
+th.sortable:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; border-radius: 6px; }
+th.sortable .ar { font-style: normal; font-size: 9px; margin-left: 4px; opacity: .3; }
+th.sortable.sorted { color: var(--text); }
+th.sortable.sorted .ar { opacity: 1; color: var(--blue); }
+
+.fm-tbl td {
+  padding: 9px; border-bottom: 1px solid var(--tbl-divider);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;
+}
+.fm-tbl tbody tr:hover { background: var(--tbl-hover); }
+.fm-tbl .num { font-variant-numeric: tabular-nums; }
+.fm-tbl .nm { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.fm-tbl .nm .tx { overflow: hidden; text-overflow: ellipsis; }
+.fm-act { display: flex; gap: 5px; }
+.fm-act button {
+  border: 0; background: var(--sf); color: var(--text-2); border-radius: 8px;
+  width: 26px; height: 26px; cursor: pointer; font-size: 13px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+.fm-act button:hover { background: var(--sf-strong); color: var(--text); }
+.fm-act button.dg:hover { background: rgba(255,69,58,.18); color: #ffb3ae; }
+
+/* 缩略图模式 */
+.fm-thumbs { display: grid; gap: 12px; grid-template-columns: repeat(var(--ui-cols, 4), minmax(0, 1fr)); }
+.thumb { border-radius: 14px; overflow: hidden; background: var(--sf); border: 1px solid var(--stroke); position: relative; }
+/* 缩略图卡片左上角的勾选框：默认半透明，勾选后高亮 —— 缩略图模式下也能多选 */
+.thumb-ck {
+  position: absolute; top: 6px; left: 6px; z-index: 2;
+  display: flex; align-items: center; justify-content: center;
+  padding: 3px 4px; border-radius: 8px;
+  background: rgba(0,0,0,.42); backdrop-filter: none;
+}
+.thumb-ck .fm-ck { margin: 0; }
+.thumb-ck:has(.fm-ck:checked) { background: rgba(10,132,255,.9); }
+.thumb .pv {
+  width: 100%; aspect-ratio: 1 / 1; overflow: hidden;
+  display: flex; align-items: center; justify-content: center; background: var(--track-bg);
+}
+.thumb .pv img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* 缩略图是"滚到附近才挂 src"，没挂上的位置给一点低调微光占位，别是一片死板 */
+.thumb .pv img.timg:not([src]) {
+  background: linear-gradient(100deg, var(--track-bg) 25%, rgba(128,140,160,.16) 45%, var(--track-bg) 65%);
+  background-size: 240% 100%;
+  animation: thumbPh 1.4s linear infinite;
+}
+@keyframes thumbPh { from { background-position: 0% 0; } to { background-position: -240% 0; } }
+.thumb .pv .ph { font-size: 26px; color: var(--text-3); }
+.thumb .mt { padding: 7px 9px; border-top: 1px solid var(--stroke); }
+.thumb .mt .n { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thumb .mt .s { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+
+/* 投放区：既保留单独的投放条，也支持把文件拖到整个内容区 */
+.fm-drop {
+  border: 1px dashed var(--stroke-strong); border-radius: 14px; padding: 14px;
+  text-align: center; color: var(--text-3); font-size: 12.5px; margin-bottom: 12px;
+  transition: background .15s, border-color .15s;
+}
+.fm-drop.over { background: var(--sf-strong); border-color: #0a84ff; color: var(--text); }
+.fm-host.over { outline: 2px dashed #0a84ff; outline-offset: 4px; border-radius: 14px; }
+
+/* 多选：行首复选框 + 顶部"已选 N 项"操作条 */
+.fm-sel {
+  display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 12px;
+  background: rgba(10,132,255,.12); border: 1px solid rgba(10,132,255,.35); font-size: 12.5px;
+}
+.fm-tbl th.ck, .fm-tbl td.ck { width: 34px; padding-left: 2px; padding-right: 0; }
+/* ⚠️ 列表里所有复选框必须**同一尺寸**：以前只有 .fm-ck 显式给了 15px，
+   而表头全选（.fm-all）、存储浏览（.stg-chk / #stg-check-all）走的是浏览器默认
+   尺寸（Chrome 约 13px），看着就像"左上角那个白框比下面的小一圈"。
+   统一在这里声明，别再只给其中一类加宽高。 */
+.fm-ck, .fm-all, .stg-chk, .tbl th input[type="checkbox"], .tbl td input[type="checkbox"] {
+  width: 15px; height: 15px; accent-color: #0a84ff; cursor: pointer; vertical-align: middle;
+}
+
+/* ── 概览：容量卡片 + 两张饼图 ── */
+.cap-bar { height: 10px; border-radius: 6px; background: var(--track-bg); overflow: hidden; margin: 2px 0 16px; }
+.cap-bar i {
+  display: block; height: 100%; border-radius: 6px;
+  background: linear-gradient(90deg, #34d399, #0a84ff);
+  transition: width .45s cubic-bezier(.22,1,.36,1);
+}
+.cap-bar.warn i { background: linear-gradient(90deg, #fbbf24, #ff453a); }
+.cap-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; }
+.cap-box { min-width: 0; }
+.cap-box h3 {
+  font-size: 13px; font-weight: 650; color: var(--text-2);
+  margin-bottom: 10px; display: flex; align-items: center; gap: 6px;
+}
+.cap-pie { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.pie { flex: none; }
+.legend { flex: 1; min-width: 128px; display: flex; flex-direction: column; gap: 6px; }
+.lg-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.lg-row i { flex: none; width: 10px; height: 10px; border-radius: 3px; }
+.lg-row .lg-n {
+  flex: 1; min-width: 0; color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lg-row .lg-v { flex: none; color: var(--text-3); font-variant-numeric: tabular-nums; }
 
 /* ── 玻璃卡片 ─────────────────────────── */
 .glass {
@@ -271,8 +471,10 @@ body {
 
 /* ── 顶栏 ─────────────────────────────── */
 .topbar {
-  position: sticky; top: 12px; z-index: 50; margin-bottom: 22px;
-  display: flex; align-items: center; gap: 12px; padding: 12px 18px;
+  /* 常驻顶部：top:0 贴住视口上沿，滚动不隐藏；nowrap 保证各项不换行、不被截断 */
+  position: sticky; top: 0; z-index: 60; margin-bottom: 18px;
+  display: flex; align-items: center; gap: 10px; padding: 11px 16px;
+  flex-wrap: nowrap; white-space: nowrap;
   background: var(--glass-strong);
   backdrop-filter: none; -webkit-backdrop-filter: none;
   border: 1px solid var(--stroke); border-radius: 22px;
@@ -285,10 +487,19 @@ body {
 }
 :root[data-theme="apple-dark"] .topbar { border: 1px solid var(--stroke-strong); box-shadow: 0 14px 40px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.25); }
 .logo { width: 38px; height: 38px; border-radius: 12px; flex: none;
-  display: flex; align-items: center; justify-content: center;
+  display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden;
   background: linear-gradient(150deg, #67e8f9, #3b82f6 55%, #8b5cf6);
   box-shadow: var(--shadow-logo); }
 .logo svg { width: 22px; height: 22px; }
+/* 顶栏头像：图片盖在渐变底上（object-fit 裁成方形）；加载失败就隐掉，露出底下那枚图标兜底。
+   整块是 <a>，点它回站点主页，所以这里要压掉 <a> 的蓝字与下划线。 */
+a.logo-link { flex: none; }
+a.logo-link .logo-av {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; border-radius: inherit; display: block; background: var(--sf);
+}
+a.logo-link:hover .logo-av { opacity: .85; }
+a.logo-link::after { content: ""; }
 .topbar h1 { font-size: 17px; font-weight: 700; letter-spacing: -.02em; }
 .topbar .sub { font-size: 11.5px; color: var(--text-3); margin-top: 1px; }
 .topbar .spacer { flex: 1; }
@@ -407,6 +618,28 @@ body {
 .tbl .num { font-variant-numeric: tabular-nums; }
 .mono { font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace; font-size: 12.5px; }
 .name-cell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── 存储浏览的辅助排版 ───────────────────
+   文件名一行是真实文件名，下面那行灰字是存储桶里的原始对象 key（R2/S3 的真实身份）。 */
+.stg-nm { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stg-key { font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace; font-size: 11px;
+  color: var(--text-3); opacity: .62; max-width: 320px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+.stg-owner { max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
+.stg-loc { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── 「定位过去」时的高亮（5 秒后由 JS 摘掉 class） ──
+   用 outline + 背景渐变，暗色亮蓝、亮色亮绿，两种主题下都看得清。 */
+@keyframes hlPulse {
+  0%   { background: var(--hl-strong); }
+  55%  { background: var(--hl-strong); }
+  70%  { background: var(--hl-soft); }
+  100% { background: transparent; }
+}
+tr.hl-tmp > td, div.hl-tmp {
+  animation: hlPulse 5s linear forwards;
+  border-radius: 8px;
+}
 .empty { padding: 44px 20px; text-align: center; color: var(--text-3); font-size: 14px; }
 .empty .icon { font-size: 34px; margin-bottom: 10px; opacity: .7; }
 
@@ -443,6 +676,71 @@ body {
 .btn.sm { padding: 7px 12px; font-size: 12.5px; border-radius: 11px; box-shadow: none; }
 .btn.sm:hover { box-shadow: var(--shadow-btn-plain-hover); }
 .btn[disabled] { opacity: .4; pointer-events: none; }
+/* 下载按钮（用户明确要求：放在「移动到…」左边、绿色） */
+.btn.ok {
+  background: linear-gradient(180deg,#3ddc84,#1fb573); border-color: transparent; color: #06251a;
+  box-shadow: 0 4px 14px rgba(31,181,115,.3);
+}
+.btn.ok:hover { filter: brightness(1.06); box-shadow: 0 6px 18px rgba(31,181,115,.4); transform: translateY(-1px); }
+.btn.ok:active { transform: translateY(0) scale(.97); }
+/* 选中了文件夹时置灰：浏览器根本下不了目录，给个灰键比点了没反应强 */
+.btn.ok[disabled] { background: var(--sf-strong); color: var(--text-3); box-shadow: none; filter: none; }
+
+/* ── 条目光标（点一下先高亮，空格 / Enter / 双击才打开预览）───────────
+   和复选框"已选"是两回事：复选框 = 批量操作的范围，光标 = 我现在指着哪一行。 */
+.thumb.cur { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(10,132,255,.5); }
+.fm-tbl tr.cur > td, .tbl tr.cur > td { background: rgba(10,132,255,.16) !important; }
+.fm-tbl tr.cur:hover > td, .tbl tr.cur:hover > td { background: rgba(10,132,255,.22) !important; }
+
+/* ── 图片预览（像手机相册一样全屏）─────────────────────────────── */
+#lb {
+  position: fixed; inset: 0; z-index: 400;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+  animation: lbIn .2s ease-out;
+}
+#lb.lb-out { animation: lbOut .16s ease-in forwards; }
+/* 背景先压暗、再一路压到纯黑（用户明确要的"背景压低亮度一直到黑色"） */
+#lb .lb-bg {
+  position: absolute; inset: 0; background: #000; cursor: zoom-out;
+  animation: lbBg .28s ease-out forwards;
+}
+@keyframes lbBg { from { background: rgba(0,0,0,.3); } to { background: #000; } }
+@keyframes lbIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes lbOut { to { opacity: 0; } }
+/* ⚠️ 这里刻意**不加** max-width/max-height：布局尺寸必须等于原图真实尺寸，
+   否则"双击 1:1"会被 CSS 缩成"铺满屏幕"（4200px 的图永远显示不出真实像素）。
+   初始缩放由 JS 算 fit = min(1, 视口/原图)，铺不满屏幕就是 1:1 起步。 */
+#lb .lb-img {
+  position: absolute; left: 50%; top: 50%;
+  transform-origin: 50% 50%; will-change: transform; user-select: none;
+  -webkit-user-drag: none; cursor: grab; box-shadow: 0 24px 80px rgba(0,0,0,.75);
+}
+/* 原图还在路上时：拿手头那张小图当模糊底衬（相册里那股"先糊后清"的观感） */
+/* pointer-events:none —— 底衬铺满整屏，不设的话它会把黑边上的点击/滚轮全吃掉，
+   变成"点黑边关不掉预览"。 */
+#lb .lb-ph {
+  position: absolute; inset: 0; opacity: .85; transform: scale(1.06); filter: blur(26px);
+  background-repeat: no-repeat; background-position: center; background-size: contain;
+  pointer-events: none;
+}
+#lb .lb-img.drag { cursor: grabbing; }
+#lb .lb-spin {
+  position: absolute; z-index: 2; width: 44px; height: 44px; border-radius: 50%;
+  border: 3px solid rgba(255,255,255,.22); border-top-color: #fff; pointer-events: none;
+  animation: lbSpin .8s linear infinite;
+}
+@keyframes lbSpin { to { transform: rotate(360deg); } }
+#lb .lb-tip {
+  position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 3;
+  color: rgba(255,255,255,.55); font-size: 12px; white-space: nowrap; pointer-events: none;
+}
+#lb .lb-bar {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; padding: 26px 20px 12px;
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  color: rgba(255,255,255,.75); font-size: 12.5px; pointer-events: none;
+  background: linear-gradient(180deg, rgba(0,0,0,0), rgba(0,0,0,.75));
+}
+#lb .lb-bar .nm { font-weight: 650; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60vw; }
 
 /* ── 上传区 ───────────────────────────── */
 .dropzone {
@@ -509,6 +807,21 @@ body {
 .group .row input[type=number]:focus { border-color: rgba(10,132,255,.7); }
 .group .row input[type=text] { width: 170px; text-align: left; }
 
+/* 卡片内的补充说明（.tip）——⚠️ 之前这个类**完全没有样式**：
+   .row 有 18px 左右内边距，而 .tip 是 .row 的兄弟节点，于是文字顶到卡片边框、
+   在 20px 圆角处看着像"溢出卡片"。这里补上左右内边距与字号，与 .row 对齐。 */
+.group > .tip {
+  padding: 6px 18px 14px;
+  font-size: 12.5px; color: var(--text-3); line-height: 1.6;
+}
+/* 长 URL / 无空格长串（如 /admin、邮箱、token）在窄列里必须能断行，
+   否则会把容器撑宽、压到相邻列上。 */
+.group .row .info .d,
+.group > .tip,
+.field .tip,
+.crumb a,
+.thumb .mt .n { overflow-wrap: anywhere; }
+
 /* iOS 开关 */
 .switch { position: relative; width: 50px; height: 30px; flex: none; cursor: pointer; }
 .switch input { opacity: 0; width: 0; height: 0; }
@@ -549,6 +862,22 @@ body {
 .modal .sub { font-size: 13px; color: var(--text-3); margin-bottom: 18px; }
 .modal .actions { display: flex; gap: 10px; margin-top: 20px; }
 .modal .actions .btn { flex: 1; padding: 13px; font-size: 15px; border-radius: 16px; }
+
+/* ── 冷静期：破坏性操作（彻底删除）默认锁 5 秒，旁边走倒计时 ──
+   为什么不用 disabled 直接把整块盖住：用户得看得见"有个更狠的选项在那儿"，
+   否则会以为删除弹窗只有两个键。所以锁的是按键本身 + 一条进度条。 */
+.dl-purge { margin-top: 14px; padding-top: 14px; border-top: 0.5px solid var(--stroke);
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.dl-purge .btn { flex: 1 1 auto; min-width: 180px; padding: 10px 12px; font-size: 13.5px; border-radius: 13px;
+  background: transparent; color: var(--red); border: 1px solid var(--red); box-shadow: none; }
+.dl-purge .btn[disabled] { opacity: .4; }
+.dl-purge .btn:not([disabled]):hover { background: var(--btn-danger-bg-hover); box-shadow: var(--shadow-btn-danger); }
+.dl-cd { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text-3); white-space: nowrap; }
+.dl-bar { flex: 1 1 100%; height: 3px; border-radius: 3px; background: var(--sf-strong); overflow: hidden; }
+.dl-bar > i { display: block; height: 100%; width: 0; border-radius: 3px; background: var(--red); transition: width 1s linear; }
+.dl-bar-row { margin-top: 14px; padding-top: 12px; border-top: 0.5px solid var(--stroke);
+  display: flex; align-items: center; gap: 10px; }
+.dl-bar-row .dl-cd { font-size: 13px; font-weight: 650; color: var(--red); }
 .link-box { display: flex; gap: 8px; margin-top: 4px; }
 .link-box input { flex: 1; padding: 12px 14px; border-radius: 14px; font-size: 14px;
   font-family: ui-monospace, "SF Mono", monospace; color: var(--text);
@@ -558,12 +887,22 @@ body {
 #toasts { position: fixed; top: 18px; left: 50%; transform: translateX(-50%); z-index: 200;
   display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
 .toast {
-  padding: 11px 22px; border-radius: 16px; font-size: 14px; font-weight: 600; color: var(--text);
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 12px 11px 22px; border-radius: 16px; font-size: 14px; font-weight: 600; color: var(--text);
   background: var(--glass-strong);
   backdrop-filter: none; -webkit-backdrop-filter: none;
   border: 1px solid var(--stroke); box-shadow: var(--shadow-toast);
-  animation: toastIn .35s cubic-bezier(.22,1.2,.36,1) both; max-width: 86vw; text-align: center;
+  animation: toastIn .35s cubic-bezier(.22,1.2,.36,1) both; max-width: 86vw; text-align: left;
 }
+/* 提示框右侧的红色关闭叉 —— 失败提示必须能手动关掉，否则会一直挂在屏幕顶上 */
+.toast .msg { flex: 1; min-width: 0; }
+.toast-x {
+  flex: none; width: 22px; height: 22px; padding: 0; line-height: 1;
+  border: 0; border-radius: 50%; background: var(--btn-danger-bg); cursor: pointer;
+  color: #ff453a; font-size: 14px; display: flex; align-items: center; justify-content: center;
+  transition: background .15s;
+}
+.toast-x:hover { background: var(--btn-danger-bg-hover); }
 :root[data-theme="apple"] .toast,
 :root[data-theme="apple-dark"] .toast {
   backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
@@ -585,6 +924,8 @@ body {
 .tag.expired { background: rgba(255,159,10,.16); color: #fcd34d; }
 .tag.revoked { background: rgba(255,69,58,.16); color: #fda293; }
 .tag.maxed { background: rgba(255,159,10,.16); color: #fcd34d; }
+/* 「登出」专用黄：成功登出用黄色，与成功登录（绿）/失败（红）区分开 */
+.tag.warn { background: rgba(250,204,21,.16); color: #fbbf24; }
 .tag i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 
 /* ── 警示横幅 ─────────────────────────── */
@@ -634,11 +975,11 @@ const I18N = {
   zh: {
     docTitle: '{site} · 管理后台',
     // 通用
-    login: '登录', logout: '退出', cancel: '取消', confirm: '确定', copy: '复制', close: '关闭',
+    login: '登录', logout: '退出', cancel: '取消', confirm: '确定', copy: '复制', close: '关闭', goHome: '回到站点主页',
     copied: '已复制到剪贴板', save: '保存设置', saved: '设置已保存', forever: '永久',
     switchTo: 'EN', topbarSub: '管理后台 · Cloudflare Workers + R2',
     // 登录
-    loginSubtitle: '管理后台 · 请输入管理密钥登录', keyPlaceholder: '管理密钥 (admin)',
+    loginSubtitle: '管理后台 · 请输入用户名和密码登录', keyPlaceholder: '密码', userPlaceholder: '用户名',
     // 标签
     tabOverview: '概览', tabFiles: '文件', tabStorage: '存储浏览', tabShares: '分享', tabDirect: '直链', tabLogs: '记录', tabBans: '封禁', tabGlobal: '全球分布', tabSecurity: '安全', tabSettings: '设置', tabWebDAV: 'WebDAV',
     navContent: '内容管理', navAnalytics: '运营分析', navSecurity: '安全中心', navSystem: '系统设置',
@@ -655,12 +996,56 @@ const I18N = {
     colCountry: '国家', colName: '文件名', colSize: '大小', colShareCount: '分享数', colDownloads: '下载量',
     colUploaded: '上传时间', colActions: '操作', colLink: '链接', colCreated: '创建时间',
     colExpires: '有效期', colStatus: '状态', colReason: '原因', colBannedAt: '封禁时间', colUntil: '到期',
+    // 存储浏览
+    stgUploadTime: '上传时间', stgUploader: '上传用户', stgLocation: '位置',
+    stgGoto: '跳转到「文件」中此文件的位置', stgCopyKey: '复制原始 Key', inTrashShort: '在回收站',
+    stgNote: '存储浏览列出的是存储桶里的原始对象：有数据库记录的会显示真实文件名（下方灰字为原始 Key），上传用户 / 上传时间 / 位置取自文件记录；没有记录的孤儿对象只能显示 Key。',
     // 文件
     dropTitle: '拖拽文件到此处，或点击上传',
     dropDesc: '单文件最大 100 MB（Workers 请求限制）· 直传 R2 对象存储',
     allFiles: '全部文件', noFiles: '还没有文件，上传一个试试', createShare: '创建分享', createDirect: '创建直链', del: '删除',
     tooLarge: '「{name}」超过 100 MB 限制', uploadOk: '「{name}」上传成功', uploadFail: '「{name}」上传失败',
     uploadDone: '完成 ✅', uploadFailShort: '失败',
+    // 文件管理器（资源管理器风格）
+    fmNewFolder: '新建文件夹', fmFolderName: '文件夹名称', fmCreate: '创建', fmUp: '返回上级',
+    fmRoot: '根目录',
+    fmViewDetails: '详细信息', fmViewThumbs: '缩略图', fmThumbSize: '缩略图大小',
+    fmUpload: '上传文件', fmUploadDir: '上传文件夹', fmRefresh: '刷新', fmDropHint: '拖拽文件或文件夹到此处，上传到当前目录',
+    fmEmptyDir: '这个文件夹是空的', fmLoading: '加载中…', fmFolderCount: '文件夹', fmFileCount: '文件',
+    colsLabel: '列数', colsAutoBack: '已恢复「随窗口自动分列」', colsMin: '已经是 1 列了', colsMax: '列数已达上限',
+    colResolution: '分辨率', colModified: '修改时间', colDuration: '时长', colFps: '帧率',
+    colVBitrate: '视频码率', colABitrate: '音频码率', colMetaNone: '—',
+    newFolderOk: '已创建文件夹「{name}」', newFolderFail: '创建失败：{msg}',
+    // 回收站
+    tabTrash: '回收站',
+    trashTitle: '回收站', trashHint: '超过 30 天将自动彻底删除', emptyTrash: '清空回收站',
+    colOrigin: '原位置', colDeletedBy: '删除者', colDeletedAt: '删除时间', colDaysLeft: '剩余',
+    daysLeftN: '{n} 天', restore: '还原', purge: '彻底删除',
+    noTrash: '回收站是空的 —— 删除的文件会先放到这里，30 天内都可以还原',
+    confirmPurgeT: '彻底删除？', confirmPurgeD: '「{name}」将被永久删除，无法恢复。',
+    // 删除弹窗里的「彻底删除」冷静期（防手滑：默认锁 5 秒）
+    purgeOpt: '🗑️ 彻底删除（不可恢复）', purgeOptHint: '不可恢复 —— 需「确定」后再等 5 秒',
+    purgeCd: '{n} 秒后可点', purgeUnlocked: '已解锁',
+    confirmPurgeNT: '彻底删除这 {n} 项？',
+    confirmPurgeND: '这些项将被永久抹掉：存储对象一起删除，30 天等待期也不再有，无法还原！',
+    confirmPurgeOk: '确定（永久删除）', cancelBack: '取消（回到文件）',
+    purgeDone: '已彻底删除 {n} 项', purgeFail: '彻底删除失败：{msg}',
+    saveSpace: '已彻底删除，存储已释放',
+    confirmEmptyTrashT: '清空回收站？', confirmEmptyTrashD: '回收站内所有文件将被永久删除，无法恢复。',
+    restoredN: '已还原 {n} 项', purgedN: '已彻底删除 {n} 项', trashedN: '已移入回收站 {n} 项',
+    // 容量卡片
+    capTitle: '容量', capUsedOf: '已用 {used} / {quota}', capFilesN: '在架文件 {n} 个',
+    capTrashN: '回收站 {size}（{n} 个）', noData: '暂无数据',
+    capByUser: '按用户', capByType: '按文件类型',
+    typeImage: '图片', typeVideo: '视频', typeAudio: '音频', typeDoc: '文档',
+    typeArchive: '压缩包', typeCode: '代码', typeOther: '其它',
+    // 多选 / 重命名 / 移动
+    selectAll: '全选', selectedN: '已选 {n} 项', clearSel: '取消选择',
+    rename: '重命名', moveTo: '移动到…', deletedN: '已删除 {n} 项', movedN: '已移动 {n} 项',
+    confirmDeleteNT: '删除所选项？', confirmDeleteND: '选中的 {n} 项将移入回收站，30 天内都可以还原。',
+    renameT: '重命名', renamePh: '新名称', moveT: '移动到目录', moveHint: '填目标目录的完整路径（根目录用 /）',
+    moveNoTarget: '没有可选的目录（你只能移动到自己的文件夹里，而当前没有其它子文件夹）',
+    moveCount: '共 {n} 项',
     // 分享弹窗
     shareModalTitle: '创建分享链接', shareModalSub: '生成公开下载链接，可设置有效期与下载次数上限',
     validity: '有效期', perm: '永久有效', h1: '1 小时', d1: '1 天', d7: '7 天', d30: '30 天',
@@ -707,6 +1092,8 @@ const I18N = {
     // 设置
     siteName: '站点名称', siteNameD: '显示在分享页和后台标题',
     trafficLimit: '月度流量限额（GB）',
+    storageCap: '存储硬上限（GB，十进制）',
+    storageCapD: '网盘容量天花板，必须小于 {free}（Cloudflare 免费额度）。上传前会按桶内真实占用校验，并自动彻底删除回收站里最旧的文件来腾位置；实在腾不出则拒绝上传，确保永不产生存储费用。',
     trafficLimitD: '本月已用 {used}。流量达到限额后，所有下载自动暂停，防止流量超额产生费用。设为 0 表示不限制，每月自动重置。',
     resetTraffic: '重置本月流量', resetTrafficD: '将已用流量清零，立即恢复下载服务', reset: '重置',
     perIp: '单 IP 最大下载次数',
@@ -994,11 +1381,11 @@ const I18N = {
   en: {
     docTitle: '{site} · Admin Console',
     // 通用
-    login: 'Log in', logout: 'Log out', cancel: 'Cancel', confirm: 'Confirm', copy: 'Copy', close: 'Close',
+    login: 'Log in', logout: 'Log out', cancel: 'Cancel', confirm: 'Confirm', copy: 'Copy', close: 'Close', goHome: 'Back to site',
     copied: 'Copied to clipboard', save: 'Save Settings', saved: 'Settings saved', forever: 'Forever',
     switchTo: '中文', topbarSub: 'Admin console · Cloudflare Workers + R2',
     // 登录
-    loginSubtitle: 'Admin console · Enter your admin key to continue', keyPlaceholder: 'Admin key (admin)',
+    loginSubtitle: 'Admin console · Enter your username and password', keyPlaceholder: 'Password', userPlaceholder: 'Username',
     // 标签
     tabOverview: 'Overview', tabFiles: 'Files', tabStorage: 'Storage', tabShares: 'Shares', tabDirect: 'Direct', tabLogs: 'Logs', tabBans: 'Bans', tabGlobal: 'Global', tabSecurity: 'Security', tabSettings: 'Settings', tabWebDAV: 'WebDAV',
     navContent: 'Content', navAnalytics: 'Analytics', navSecurity: 'Security', navSystem: 'System',
@@ -1015,12 +1402,56 @@ const I18N = {
     colCountry: 'Country', colName: 'Name', colSize: 'Size', colShareCount: 'Shares', colDownloads: 'Downloads',
     colUploaded: 'Uploaded', colActions: 'Actions', colLink: 'Link', colCreated: 'Created',
     colExpires: 'Expires', colStatus: 'Status', colReason: 'Reason', colBannedAt: 'Banned at', colUntil: 'Until',
+    // 存储浏览
+    stgUploadTime: 'Uploaded', stgUploader: 'Uploader', stgLocation: 'Location',
+    stgGoto: 'Jump to this file in the Files tab', stgCopyKey: 'Copy raw Key', inTrashShort: 'in trash',
+    stgNote: 'This lists raw objects in the bucket: records with a DB entry show their real file name (grey line = raw Key) plus uploader / upload time / location from the file record; orphan objects have no record and can only show the Key.',
     // 文件
     dropTitle: 'Drop files here or click to upload',
     dropDesc: 'Max 100 MB per file (Workers limit) · Stored directly in R2',
     allFiles: 'All Files', noFiles: 'No files yet — upload one to get started', createShare: 'Share', createDirect: 'Direct', del: 'Delete',
     tooLarge: '"{name}" exceeds the 100 MB limit', uploadOk: '"{name}" uploaded', uploadFail: '"{name}" upload failed',
     uploadDone: 'Done ✅', uploadFailShort: 'Failed',
+    // File manager (Explorer-style)
+    fmNewFolder: 'New folder', fmFolderName: 'Folder name', fmCreate: 'Create', fmUp: 'Up',
+    fmRoot: 'Root',
+    fmViewDetails: 'Details', fmViewThumbs: 'Thumbnails', fmThumbSize: 'Thumbnail size',
+    fmUpload: 'Upload', fmUploadDir: 'Upload folder', fmRefresh: 'Refresh', fmDropHint: 'Drop files or folders here to upload into this folder',
+    fmEmptyDir: 'This folder is empty', fmLoading: 'Loading…', fmFolderCount: 'folders', fmFileCount: 'files',
+    colsLabel: 'Cols', colsAutoBack: 'Back to auto column count', colsMin: 'Already 1 column', colsMax: 'Column limit reached',
+    colResolution: 'Resolution', colModified: 'Modified', colDuration: 'Duration', colFps: 'FPS',
+    colVBitrate: 'V-bitrate', colABitrate: 'A-bitrate', colMetaNone: '—',
+    newFolderOk: 'Folder "{name}" created', newFolderFail: 'Failed: {msg}',
+    // Trash
+    tabTrash: 'Trash',
+    trashTitle: 'Trash', trashHint: 'Deleted automatically after 30 days', emptyTrash: 'Empty trash',
+    colOrigin: 'Original path', colDeletedBy: 'Deleted by', colDeletedAt: 'Deleted at', colDaysLeft: 'Left',
+    daysLeftN: '{n} d', restore: 'Restore', purge: 'Delete forever',
+    noTrash: 'Trash is empty — deleted files land here and stay restorable for 30 days',
+    confirmPurgeT: 'Delete forever?', confirmPurgeD: '"{name}" will be permanently deleted. This cannot be undone.',
+    // Cooldown on the irreversible action in the delete dialog (guards against mis-clicks)
+    purgeOpt: '🗑️ Delete forever (unrecoverable)', purgeOptHint: 'Irreversible — confirm, then wait 5 s',
+    purgeCd: 'clickable in {n}s', purgeUnlocked: 'unlocked',
+    confirmPurgeNT: 'Permanently delete these {n} item(s)?',
+    confirmPurgeND: 'These will be wiped for good: the stored objects go with them, there is no 30-day grace period and no undo.',
+    confirmPurgeOk: 'Confirm (delete forever)', cancelBack: 'Cancel (back to files)',
+    purgeDone: 'Permanently deleted {n} item(s)', purgeFail: 'Purge failed: {msg}',
+    saveSpace: 'Permanently deleted, storage reclaimed',
+    confirmEmptyTrashT: 'Empty the trash?', confirmEmptyTrashD: 'All files in the trash will be permanently deleted. This cannot be undone.',
+    restoredN: 'Restored {n} item(s)', purgedN: 'Permanently deleted {n} item(s)', trashedN: 'Moved {n} item(s) to trash',
+    // Capacity card
+    capTitle: 'Capacity', capUsedOf: '{used} / {quota} used', capFilesN: '{n} files stored',
+    capTrashN: 'Trash {size} ({n})', noData: 'No data',
+    capByUser: 'By user', capByType: 'By file type',
+    typeImage: 'Images', typeVideo: 'Videos', typeAudio: 'Audio', typeDoc: 'Documents',
+    typeArchive: 'Archives', typeCode: 'Code', typeOther: 'Other',
+    // Selection / rename / move
+    selectAll: 'Select all', selectedN: '{n} selected', clearSel: 'Clear',
+    rename: 'Rename', moveTo: 'Move…', deletedN: 'Deleted {n} item(s)', movedN: 'Moved {n} item(s)',
+    confirmDeleteNT: 'Delete selected?', confirmDeleteND: 'The {n} selected item(s) will be moved to the trash and stay restorable for 30 days.',
+    renameT: 'Rename', renamePh: 'New name', moveT: 'Move to folder', moveHint: 'Full path of the target folder (/ for root)',
+    moveNoTarget: 'No destination available (you can only move within your own folder, and it has no other subfolder yet)',
+    moveCount: '{n} item(s)',
     // 分享弹窗
     shareModalTitle: 'Create Share Link', shareModalSub: 'Generate a public download link with optional expiry and download cap',
     validity: 'Validity', perm: 'Forever', h1: '1 hour', d1: '1 day', d7: '7 days', d30: '30 days',
@@ -1067,6 +1498,8 @@ const I18N = {
     // 设置
     siteName: 'Site Name', siteNameD: 'Shown on the share page and console title',
     trafficLimit: 'Monthly Traffic Quota (GB)',
+    storageCap: 'Storage Hard Cap (GB, decimal)',
+    storageCapD: 'Ceiling for the disk and must stay below {free} (Cloudflare free quota). Uploads are checked against the real bucket size and auto-purge the oldest trash files first; once that is not enough, uploads are rejected so storage never becomes billable.',
     trafficLimitD: '{used} used this month. Downloads auto-pause when the quota is reached to avoid overage charges. Set 0 for unlimited; resets monthly.',
     resetTraffic: 'Reset Monthly Traffic', resetTrafficD: 'Zero out used traffic and resume downloads immediately', reset: 'Reset',
     perIp: 'Max Downloads per IP',
@@ -1410,7 +1843,9 @@ async function api(path, opts={}){
     headers: { ...(opts.body && !(opts.body instanceof FormData) ? {'content-type':'application/json'} : {}), ...(opts.headers||{}) } });
   let data = null;
   try { data = await r.json(); } catch {}
-  if(r.status === 401 && !path.includes('/login')) { showLogin(); throw new Error('unauthorized'); }
+  // 会话过期（401）时回到 /login 完整登录页：本 SPA 内置登录卡片没有 GitHub / OAuth 按钮，
+  // 会话默默过期后会让人以为"GitHub 登录入口消失了"。
+  if(r.status === 401 && !path.includes('/login')) { location.replace('/login'); throw new Error('unauthorized'); }
   if(!r.ok) throw new Error(data?.error || `HTTP ${r.status}`);
   return data;
 }
@@ -1418,9 +1853,28 @@ async function api(path, opts={}){
 function toast(msg, type='ok'){
   const el = document.createElement('div');
   el.className = `toast ${type}`;
-  el.textContent = msg;
+  const m = document.createElement('span');
+  m.className = 'msg';
+  m.textContent = msg;
+  const x = document.createElement('button');
+  x.type = 'button';
+  x.className = 'toast-x';
+  x.textContent = '✕';
+  x.title = t('close');
+  x.setAttribute('aria-label', t('close'));
+  let timer = setTimeout(() => dismiss(), type === 'err' ? 6000 : 2600);
+  function dismiss(){
+    if(el.dataset.done) return;
+    el.dataset.done = '1';
+    clearTimeout(timer);
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 300);
+  }
+  x.onclick = dismiss;
+  el.appendChild(m);
+  el.appendChild(x);
   $('#toasts').appendChild(el);
-  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 300); }, 2600);
+  return el;
 }
 
 function copyText(text){
@@ -1438,10 +1892,93 @@ const confirmDialog = (title, msg, danger=true) => new Promise(resolve => {
     <div class="actions">
       <button class="btn" data-x>${esc(t('cancel'))}</button>
       <button class="btn ${danger?'danger':'primary'}" data-ok>${esc(t('confirm'))}</button>
-    </div>`);
+    </div>`, () => resolve(false));
   $('[data-ok]').onclick = () => { closeModal(); resolve(true); };
   $('[data-x]').onclick = () => { closeModal(); resolve(false); };
 });
+
+/* ═══════════ 删除弹窗：软删除 / 彻底删除 ═══════════
+ *
+ * 「彻底删除」是不可逆的，所以按用户要求上两道锁：
+ *   ① 弹窗里的「彻底删除」按钮默认灰着，旁边走 5 秒倒计时，倒计时走完才可点；
+ *   ② 点下去还有二次确认，那一次的「确定」同样锁 5 秒；第二次点「取消」直接回文件列表。
+ * 普通的「确定」（移入回收站，30 天内可还原）不设锁，别让常用路径变麻烦。
+ *
+ * deleteDialog → 'soft' | 'purge' | null(取消)
+ * purgeDialog  → true(真的删) | false(取消，什么都不做)
+ */
+const COOLDOWN_SEC = 5;
+
+/** 跑一个 n 秒倒计时；返回 {stop, onUnlock} 手动收尾用 */
+function runCooldown(sec, set, done){
+  let left = sec;
+  const timer = setInterval(() => {
+    left -= 1;
+    if(left <= 0){ clearInterval(timer); done(); return; }
+    set(left);
+  }, 1000);
+  return timer;
+}
+
+function deleteDialog(total){
+  const zh = LANG === 'zh';
+  return new Promise(resolve => {
+    openModal(`
+      <h3>${esc(t('confirmDeleteNT'))}</h3>
+      <div class="sub">${esc(t('confirmDeleteND', { n: total }))}</div>
+      <div class="actions">
+        <button class="btn" data-x>${esc(t('cancel'))}</button>
+        <button class="btn danger" data-ok>${esc(t('confirm'))}</button>
+      </div>
+      <div class="dl-purge">
+        <button class="btn" id="dl-purge" disabled>🗑️ ${esc(t('purgeOpt'))}</button>
+        <span class="dl-cd" id="dl-cd">${esc(t('purgeCd', { n: COOLDOWN_SEC }))}</span>
+        <span class="dl-bar"><i id="dl-bar-i"></i></span>
+      </div>`, () => finish(null));
+    const btn = $('#dl-purge'), cd = $('#dl-cd'), bar = $('#dl-bar-i');
+    let timer = null;
+    // ⚠️ finish 必须顺手 closeModal()：confirmDialog 是在 onclick 里 close 的，
+    // 这里把关闭动作挪进 finish，否则"取消"之后那层弹窗还挂在屏幕上（看着像卡住了）。
+    const finish = (v) => { if(timer) clearInterval(timer); closeModal(); resolve(v); };
+    timer = runCooldown(COOLDOWN_SEC,
+      (n) => { if(cd) cd.textContent = t('purgeCd', { n }); if(bar) bar.style.width = (100 - n * 100 / COOLDOWN_SEC) + '%'; },
+      () => {
+        btn.disabled = false;
+        if(cd) cd.textContent = t('purgeUnlocked');
+        if(bar) bar.style.width = '100%';
+      });
+    $('[data-ok]').onclick = () => finish('soft');
+    $('[data-x]').onclick = () => finish(null);
+    btn.onclick = () => finish('purge');
+  });
+}
+
+function purgeDialog(total){
+  const zh = LANG === 'zh';
+  return new Promise(resolve => {
+    openModal(`
+      <h3>${esc(t('confirmPurgeNT', { n: total }))}</h3>
+      <div class="sub">${esc(t('confirmPurgeND'))}</div>
+      <div class="actions">
+        <button class="btn" data-x>${esc(t('cancelBack'))}</button>
+        <button class="btn danger" data-ok disabled>${esc(t('confirmPurgeOk'))}</button>
+      </div>
+      <div class="dl-bar-row"><span class="dl-cd" id="dl-cd2">${esc(t('purgeCd', { n: COOLDOWN_SEC }))}</span>
+        <span class="dl-bar"><i id="dl-bar-i2"></i></span></div>`, () => finish(false));
+    const cd = $('#dl-cd2'), bar = $('#dl-bar-i2'), ok = $('[data-ok]');
+    let timer = null;
+    const finish = (v) => { if(timer) clearInterval(timer); closeModal(); resolve(v); };
+    timer = runCooldown(COOLDOWN_SEC,
+      (n) => { if(cd) cd.textContent = t('purgeCd', { n }); if(bar) bar.style.width = (100 - n * 100 / COOLDOWN_SEC) + '%'; },
+      () => {
+        ok.disabled = false;
+        if(cd) cd.textContent = t('purgeUnlocked');
+        if(bar) bar.style.width = '100%';
+      });
+    ok.onclick = () => finish(true);
+    $('[data-x]').onclick = () => finish(false);
+  });
+}
 
 function toggleLang(){
   try { localStorage.setItem('cd_lang', LANG === 'zh' ? 'en' : 'zh'); } catch {}
@@ -1449,12 +1986,14 @@ function toggleLang(){
 }
 
 /* ═══════════ 模态框 ═══════════ */
-function openModal(html){
+function openModal(html, onMask){
   closeModal();
   const mask = document.createElement('div');
   mask.className = 'modal-mask'; mask.id = 'modal';
   mask.innerHTML = `<div class="modal">${html}</div>`;
-  mask.addEventListener('click', e => { if(e.target === mask) closeModal(); });
+  // ⚠️ 点遮罩必须同时「关掉」和「把 Promise 收尾」：
+  // 只 closeModal() 不 resolve 的话，await 方会永远挂着 —— 表现就是"点了没反应"。
+  mask.addEventListener('click', e => { if(e.target === mask){ closeModal(); if(onMask) onMask(); } });
   document.body.appendChild(mask);
 }
 function closeModal(){ $('#modal')?.remove(); }
@@ -1462,7 +2001,8 @@ function closeModal(){ $('#modal')?.remove(); }
 /* ═══════════ 登录视图（支持 2FA 两阶段） ═══════════ */
 let siteTitle = 'cloud-r2pan';
 let loginStage = 'password'; // 'password' | '2fa' | 'recovery'
-let savedLoginKey = ''; // 第一阶段输入的 admin key
+let savedLoginKey = ''; // 第一阶段输入的密码
+let savedLoginUser = ''; // 第一阶段输入的用户名（2FA 阶段要一起回传）
 
 function showLogin(){
   document.title = t('docTitle', {site: siteTitle});
@@ -1472,7 +2012,8 @@ function showLogin(){
       <h1>${esc(siteTitle)}</h1>
       <div class="sub">${esc(t('loginSubtitle'))}</div>
       <form id="login-form">
-        <input type="password" id="login-key" placeholder="${esc(t('keyPlaceholder'))}" autocomplete="current-password" autofocus>
+        <input type="text" id="login-user" placeholder="${esc(t('userPlaceholder'))}" autocomplete="username" autocapitalize="off" spellcheck="false" autofocus>
+        <input type="password" id="login-key" placeholder="${esc(t('keyPlaceholder'))}" autocomplete="current-password">
         <button class="btn primary" type="submit">${esc(t('login'))}</button>
         <div class="err" id="login-err"></div>
       </form>
@@ -1480,12 +2021,14 @@ function showLogin(){
     `);
     $('#login-form').onsubmit = async e => {
       e.preventDefault();
+      const username = $('#login-user').value.trim();
       const key = $('#login-key').value.trim();
-      if(!key) return;
+      if(!username || !key) return;
+      savedLoginUser = username;
       savedLoginKey = key;
       $('#login-err').textContent = '';
       try{
-        const r = await api('/api/admin/login', { method:'POST', body: JSON.stringify({ key }) });
+        const r = await api('/api/admin/login', { method:'POST', body: JSON.stringify({ username, key }) });
         if(r.need_2fa){
           loginStage = '2fa';
           showLogin();
@@ -1518,7 +2061,7 @@ function showLogin(){
       if(!/^\d{6}$/.test(code)) return;
       $('#login-err').textContent = '';
       try{
-        const r = await api('/api/admin/login', { method:'POST', body: JSON.stringify({ key: savedLoginKey, code }) });
+        const r = await api('/api/admin/login', { method:'POST', body: JSON.stringify({ username: savedLoginUser, key: savedLoginKey, code }) });
         showApp();
       }catch(err){
         $('#login-err').textContent = err.message;
@@ -1546,7 +2089,7 @@ function showLogin(){
       if(!code) return;
       $('#login-err').textContent = '';
       try{
-        const r = await api('/api/admin/login', { method:'POST', body: JSON.stringify({ key: savedLoginKey, code }) });
+        const r = await api('/api/admin/login', { method:'POST', body: JSON.stringify({ username: savedLoginUser, key: savedLoginKey, code }) });
         if(r.recovery_used && r.totp_reset){
           // 弹出恢复成功提示
           openModal(`
@@ -1593,6 +2136,7 @@ const NAV_GROUPS = [
   { key: 'overview', ic: '📊', label: () => t('tabOverview'), tab: 'overview' },
   { key: 'content', ic: '📦', label: () => t('navContent'), subs: [
       { tab: 'files',   label: () => t('tabFiles'),   ic: '📁' },
+      { tab: 'trash',   label: () => t('tabTrash'),   ic: '🗑️' },
       { tab: 'storage', label: () => t('tabStorage'), ic: '🗄️' },
       { tab: 'shares',  label: () => t('tabShares'),  ic: '🔗' },
       { tab: 'direct',  label: () => t('tabDirect'),  ic: '⚡' },
@@ -1601,11 +2145,11 @@ const NAV_GROUPS = [
       { tab: 'logs',   label: () => t('tabLogs'),   ic: '📋' },
       { tab: 'global', label: () => t('tabGlobal'), ic: '🌍' },
     ]},
-  { key: 'security', ic: '🛡️', label: () => t('navSecurity'), subs: [
+  { key: 'security', ic: '🛡️', label: () => t('navSecurity'), adminOnly: true, subs: [
       { tab: 'bans',    label: () => t('tabBans'),    ic: '🚫' },
       { tab: 'security',label: () => t('tabSecurity'),ic: '🔒' },
     ]},
-  { key: 'system', ic: '⚙️', label: () => t('navSystem'), subs: [
+  { key: 'system', ic: '⚙️', label: () => t('navSystem'), adminOnly: true, subs: [
       { tab: 'codes',    label: () => t('tabCodes'),    ic: '🎟️' },
       { tab: 'webdav',   label: () => t('tabWebDAV'),  ic: '🗂️' },
       { tab: 'settings', label: () => t('tabSettings'), ic: '⚙️' },
@@ -1621,12 +2165,23 @@ NAV_GROUPS.forEach(g => {
 let currentTab = 'overview';
 let openGroup = 'overview'; // 当前展开的侧边栏分组
 let logsPage = 1, logsQuery = '';
+// ── 权限骨架 ── 由 /api/admin/session 填充。
+// 普通用户（role=user）看不到"安全中心"与"系统设置"两个分组。
+// 注意：前端隐藏只是体验层，真正的边界必须在服务端 —— 见 src/vfs.ts 的 *ScopeOf/can*Path。
+let IS_ADMIN = true;
+let ME_NAME = 'admin';
 
 async function showApp(){
   loginStage = 'password'; savedLoginKey = '';
   try{
     const s = await api('/api/admin/session');
     siteTitle = s.site_title || siteTitle;
+    // 权限骨架：后端未返回 is_admin 时（旧版本）一律按管理员处理，避免把人锁住
+    IS_ADMIN = s.is_admin !== false;
+    ME_NAME = s.user || 'admin';
+    // 普通用户的"落地目录"：后端给 landing_dir，一进文件页直接就是他自己的个人文件夹；
+    // 管理员为 null ⇒ 落在根目录（根目录只放各用户文件夹 + 系统目录）。
+    FM.start = s.landing_dir || null;
     // 隐藏路由：访问 /admin/apple 强制 Apple 玻璃风格（暗色紫蓝渐变）
     const path = location.pathname;
     if (/\/admin\/apple(\/|$)/.test(path)) {
@@ -1641,8 +2196,8 @@ async function showApp(){
   }
   document.title = t('docTitle', {site: siteTitle});
 
-  // 渲染侧边栏
-  const sidebarHtml = NAV_GROUPS.map(g => {
+  // 渲染侧边栏（普通用户过滤掉 adminOnly 分组）
+  const sidebarHtml = NAV_GROUPS.filter(g => !g.adminOnly || IS_ADMIN).map(g => {
     const isSingle = !g.subs;
     const active = (isSingle && currentTab === g.tab) || TAB_TO_GROUP[currentTab] === g.key;
     const subHtml = g.subs ? `
@@ -1663,12 +2218,21 @@ async function showApp(){
   $('#app').innerHTML = `
   <div class="wrap">
     <div class="topbar">
-      <div class="logo"><svg viewBox="0 0 24 24" fill="none"><path d="M12 2L21 8.5V15.5L12 22L3 15.5V8.5L12 2Z" stroke="#fff" stroke-width="1.8" stroke-linejoin="round" fill="rgba(255,255,255,.14)"/><path d="M12 2V22M3 8.5L12 15L21 8.5M3 15.5L12 9L21 15.5" stroke="#fff" stroke-width="1.2" opacity=".65"/></svg></div>
+      <button class="sb-toggle" id="sb-toggle" title="展开 / 收起左侧菜单" aria-label="展开 / 收起左侧菜单">☰</button>
+      <a class="logo logo-link" href="https://starsobservereric.cc.cd/" title="${esc(t('goHome'))}" aria-label="${esc(t('goHome'))}">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M12 2L21 8.5V15.5L12 22L3 15.5V8.5L12 2Z" stroke="#fff" stroke-width="1.8" stroke-linejoin="round" fill="rgba(255,255,255,.14)"/><path d="M12 2V22M3 8.5L12 15L21 8.5M3 15.5L12 9L21 15.5" stroke="#fff" stroke-width="1.2" opacity=".65"/></svg>
+        <img class="logo-av" src="https://starsobservereric.cc.cd/favicon-192.png" alt="" onerror="this.style.display='none'">
+      </a>
       <div><h1>${esc(siteTitle)}</h1><div class="sub">${esc(t('topbarSub'))}</div></div>
       <div class="spacer"></div>
       <div class="traffic-pill" id="traffic-pill" title="${esc(t('statTraffic'))}">
         <span class="bar"><i id="pill-bar" style="width:0%"></i></span>
         <span id="pill-text">— / —</span>
+      </div>
+      <div class="colctl" id="colctl">
+        <button id="col-minus" title="${esc(t('colsLabel'))} −1" aria-label="减少列数">−</button>
+        <div class="lbl" id="col-lbl" title="${esc(t('colsAutoBack'))}">${esc(t('colsLabel'))}<b id="col-num">1</b></div>
+        <button id="col-plus" title="${esc(t('colsLabel'))} +1" aria-label="增加列数">+</button>
       </div>
       <button class="btn sm" id="theme-toggle" title="🌙 / ☀️" style="font-size:16px;padding:9px 11px;line-height:1">${document.documentElement.dataset.theme === 'light' ? '🌙' : '☀️'}</button>
       <button class="btn sm" id="lang-btn">${esc(t('switchTo'))}</button>
@@ -1680,6 +2244,26 @@ async function showApp(){
     </div>
   </div>`;
 
+  // 侧边栏折叠开关：状态写进 localStorage，刷新/重进后保持。
+  // ⚠️ localStorage 必须整个包在 try/catch 里：Safari 隐私模式、存储被策略禁用、
+  //    以及 file:// 源下访问它都会抛 SecurityError。一旦这里抛出且没兜住，
+  //    异常会冒泡到启动逻辑的 catch，进而把整个后台换成登录页 —— 页面看起来"登录不了"。
+  {
+    const appEl = $('#app');
+    let saved = '0';
+    try { saved = localStorage.getItem('sbCollapsed') || '0'; } catch (e) { /* 存储不可用，忽略 */ }
+    if (saved === '1') appEl.classList.add('sb-collapsed');
+    $('#sb-toggle').onclick = () => {
+      appEl.classList.toggle('sb-collapsed');
+      const next = appEl.classList.contains('sb-collapsed') ? '1' : '0';
+      try { localStorage.setItem('sbCollapsed', next); } catch (e) { /* 存不下也不影响本次折叠 */ }
+    };
+  }
+
+  // 顶栏「列数」调节：读回上次的手动偏置并绑定 − / 列数 / +
+  loadColBias();
+  bindColCtl();
+
   // 绑定侧边栏事件
   $('#sidebar').addEventListener('click', e => {
     const main = e.target.closest('.sb-main');
@@ -1687,6 +2271,12 @@ async function showApp(){
       const gKey = main.dataset.group;
       const tab = main.dataset.tab;
       if (tab) {
+        // 普通用户不得进入仅管理员可见的分组（前端第一道；服务端为准）
+        const grp = NAV_GROUPS.find(g => g.key === TAB_TO_GROUP[tab]);
+        if (grp && grp.adminOnly && !IS_ADMIN) {
+          toast(LANG === 'zh' ? '无权限访问该分组' : 'No permission for this section', 'err');
+          return;
+        }
         // 叶子节点（如 overview）：直接切换
         switchTab(tab);
       } else {
@@ -1702,7 +2292,13 @@ async function showApp(){
     if (subBtn) switchTab(subBtn.dataset.tab);
   });
 
-  $('#logout-btn').onclick = async () => { await api('/api/admin/logout', {method:'POST'}); showLogin(); };
+  // ⚠️ 退出后直接回 /login 登录页，不要再用本 SPA 内置的登录卡片：
+  //    内置卡片只有"用户名 + 密码"，没有 GitHub / OAuth 按钮 —— 之前表现为
+  //    "登出之后 GitHub 登录按钮就没了"。/login 才是带 OAuth 按钮的完整登录页。
+  $('#logout-btn').onclick = async () => {
+    await api('/api/admin/logout', {method:'POST'}).catch(()=>{});
+    location.replace('/login');
+  };
   $('#traffic-pill').onclick = () => switchTab('settings');
   $('#lang-btn').onclick = toggleLang;
   $('#theme-toggle').onclick = async () => {
@@ -1719,12 +2315,16 @@ async function showApp(){
 
 /* Tab → loadXxx 函数映射 */
 const TAB_LOADERS = {
-  overview: loadOverview, files: loadFiles, storage: loadStorage, shares: loadShares,
+  overview: loadOverview, files: loadFiles, trash: loadTrash, storage: loadStorage, shares: loadShares,
   direct: loadDirectLinks, logs: loadLogs, bans: loadBans,
   global: loadGlobal, codes: loadCodes, security: loadSecurity, webdav: loadWebDAV, settings: loadSettings,
 };
 
-function switchTab(tab){
+// ⚠️ opts.skipLoad：调用方自己会去加载数据时必须传 true。
+//    switchTab 内部会隐式跑一次 TAB_LOADERS[tab]()，与调用方的加载**并发**；
+//    谁后返回谁覆盖状态（gotoFileRecord 从"存储浏览"跳过来时被隐式那次
+//    打回根目录，目标文件找不到、高亮也没了 —— 线上实测复现过）。
+function switchTab(tab, opts){
   currentTab = tab;
   openGroup = TAB_TO_GROUP[tab] || tab;
   // 更新侧边栏高亮 & 展开
@@ -1746,14 +2346,107 @@ function switchTab(tab){
   }
   const v = $('#view');
   v.innerHTML = '<div class="spin"></div>';
-  (TAB_LOADERS[tab] || (() => Promise.resolve()))().catch(e => {
-    v.innerHTML = `<div class="glass section"><div class="empty"><div class="icon">⚠️</div>${esc(e.message === 'unauthorized' ? t('loadingErr') : e.message)}</div></div>`;
-  });
+  // 先按新页签算列数（--ui-cols / 顶栏数字 / ± 可用状态），再让 loader 渲染
+  syncCols();
+  if (opts && opts.skipLoad) return;
+  (TAB_LOADERS[tab] || (() => Promise.resolve()))()
+    .then(() => reflowCurrentTab(false))   // 渲染完成后统一分列：卡片页 flowColumns、表格页 splitListTables
+    .catch(e => {
+      v.innerHTML = `<div class="glass section"><div class="empty"><div class="icon">⚠️</div>${esc(e.message === 'unauthorized' ? t('loadingErr') : e.message)}</div></div>`;
+    });
+}
+
+/* ═══════════ 容量卡片（概览）═══════════
+   饼图用内联 SVG 手画：项目本身零依赖，不值得为一个饼图引入图表库。
+   配色固定顺序 —— 否则同一分类在不同时间会换颜色，用户会以为数据变了。 */
+const PIE_COLORS = ['#0a84ff', '#34d399', '#fbbf24', '#f472b6', '#a78bfa', '#22d3ee', '#fb923c', '#94a3b8'];
+const TYPE_LABEL_KEY = {
+  image: 'typeImage', video: 'typeVideo', audio: 'typeAudio', doc: 'typeDoc',
+  archive: 'typeArchive', code: 'typeCode', other: 'typeOther',
+};
+
+/** 生成饼图。只有一个分类时画整圆（单点 path 画不出圆）。 */
+function pieSvg(items, size = 132){
+  const total = items.reduce((a, x) => a + x.bytes, 0);
+  if(total <= 0) return '';
+  const cx = size / 2, cy = size / 2, r = size / 2 - 1;
+  let a0 = -Math.PI / 2;                        // 从 12 点开始，顺时针
+  const paths = items.map((it, i) => {
+    const frac = it.bytes / total;
+    let d;
+    if(items.length === 1 || frac > 0.9999){
+      d = `M ${cx} ${cy} m -${r} 0 a ${r} ${r} 0 1 0 ${2 * r} 0 a ${r} ${r} 0 1 0 -${2 * r} 0`;
+    } else {
+      const a1 = a0 + frac * Math.PI * 2;
+      const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
+      const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+      const large = (a1 - a0) > Math.PI ? 1 : 0;
+      d = `M ${cx} ${cy} L ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)} Z`;
+      a0 = a1;
+    }
+    return `<path d="${d}" fill="${PIE_COLORS[i % PIE_COLORS.length]}"><title>${esc(it.label)}: ${fmtSize(it.bytes)}</title></path>`;
+  }).join('');
+  return `<svg class="pie" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" role="img">${paths}</svg>`;
+}
+
+function pieLegend(items){
+  const total = items.reduce((a, x) => a + x.bytes, 0) || 1;
+  return `<div class="legend">${items.map((it, i) => `
+    <div class="lg-row"><i style="background:${PIE_COLORS[i % PIE_COLORS.length]}"></i>
+      <span class="lg-n" title="${esc(it.label)}">${esc(it.label)}</span>
+      <span class="lg-v">${fmtSize(it.bytes)} · ${Math.round(it.bytes / total * 100)}%</span></div>`).join('')}</div>`;
+}
+
+function capSection(u){
+  // 分母用**存储硬上限**（十进制口径，与 Cloudflare 免费额度对齐），
+  // 不再用旧的那套 GiB 口径 —— 9.95 GiB = 10.68 GB，本身就超了免费额度。
+  const used = u.used_bytes || 0;
+  const quota = u.cap_bytes || u.quota_bytes || 0;
+  const real = u.real_bytes || 0;
+  const pct = quota > 0 ? Math.min(100, used / quota * 100) : 0;
+  const rpct = (u.cf_free_bytes || 0) > 0 ? Math.min(100, real / u.cf_free_bytes * 100) : 0;
+  const byUser = (u.by_owner || []).map(x => ({ label: x.key, bytes: x.bytes }));
+  const byType = (u.by_type || []).map(x => ({
+    label: TYPE_LABEL_KEY[x.key] ? t(TYPE_LABEL_KEY[x.key]) : x.key,
+    bytes: x.bytes,
+  }));
+  const box = (title, items) => `
+    <div class="cap-box"><h3>${title}</h3>
+      ${items.length ? `<div class="cap-pie">${pieSvg(items)}${pieLegend(items)}</div>`
+                     : `<div class="empty" style="padding:18px">${esc(t('noData'))}</div>`}
+    </div>`;
+  return `
+  <div class="glass section">
+    <div class="section-title">
+      <h2>💾 ${esc(t('capTitle'))}</h2>
+      <div style="font-size:12.5px;color:var(--text-3)">
+        ${esc(t('capUsedOf', { used: fmtSize(used), quota: fmtSize(quota) }))}
+        · ${esc(t('capFilesN', { n: u.file_count }))}${u.trash_count ? ' · ' + esc(t('capTrashN', { size: fmtSize(u.trash_bytes), n: u.trash_count })) : ''}
+      </div>
+    </div>
+    <div class="cap-bar ${pct >= 90 ? 'warn' : ''}"><i style="width:${pct.toFixed(2)}%"></i></div>
+    <div style="margin-top:6px;font-size:12.5px;color:var(--text-3);line-height:1.7">
+      ☁️ Cloudflare 实测桶内 <b style="color:${rpct >= 95 ? 'var(--danger)' : 'var(--text-2)'}">${fmtSize(real)}</b>
+      / ${fmtSize(u.cf_free_bytes || 0)}（10 GB 免费额度，${rpct.toFixed(1)}%）
+      · 回收站另占 ${fmtSize(u.trash_bytes || 0)}<br>
+      硬上限 ${fmtSize(quota)}：上传前会先自动清空回收站（按删除时间从旧到新彻底删除）来腾位置，
+      实在腾不出就拒绝上传 —— 保证永远不会超过免费额度产生费用
+      ${u.real_at ? ' · 校准于 ' + new Date(u.real_at).toLocaleString() : ' · 校准中…'}
+    </div>
+    <div class="cap-grid">
+      ${box('👤 ' + esc(t('capByUser')), byUser)}
+      ${box('🗂️ ' + esc(t('capByType')), byType)}
+    </div>
+  </div>`;
 }
 
 /* ═══════════ 概览 ═══════════ */
 async function loadOverview(){
-  const s = await api('/api/admin/stats');
+  // 统计与容量并行取：容量卡片要的接口独立于 /stats，串行只会白等一个来回
+  const [s, usage] = await Promise.all([
+    api('/api/admin/stats'),
+    api('/api/admin/storage-usage').catch(() => null),
+  ]);
   const pill = $('#traffic-pill');
   if(pill){
     pill.classList.toggle('danger', s.traffic.quota_exceeded);
@@ -1795,6 +2488,7 @@ async function loadOverview(){
         <div class="foot">${esc(t('sharesFoot',{a:c.active_shares,b:c.banned}))}</div>
       </div>
     </div>
+    ${usage ? capSection(usage) : ''}
     <div class="glass section">
       <div class="section-title"><h2>📊 ${esc(t('chartTitle'))}</h2></div>
       <div class="chart">
@@ -1828,81 +2522,1831 @@ async function loadOverview(){
   $('#goto-logs').onclick = () => switchTab('logs');
 }
 
-/* ═══════════ 文件 ═══════════ */
-async function loadFiles(){
-  const { files } = await api('/api/admin/files');
-  $('#view').innerHTML = `
-    <div class="dropzone" id="dropzone">
-      <div class="icon">☁️</div>
-      <div class="t">${esc(t('dropTitle'))}</div>
-      <div class="d">${esc(t('dropDesc'))}</div>
-      <input type="file" id="file-input" multiple hidden>
-    </div>
-    <div id="upload-list"></div>
-    <div class="glass section">
-      <div class="section-title"><h2>📁 ${esc(t('allFiles'))}（${files.length}）</h2></div>
-      ${files.length ? `
-      <div style="overflow-x:auto"><table class="tbl">
-        <thead><tr><th style="width:44px"></th><th>${esc(t('colName'))}</th><th>${esc(t('colSize'))}</th><th>${esc(t('colShareCount'))}</th><th>${esc(t('colDownloads'))}</th><th>${esc(t('colUploaded'))}</th><th style="width:170px">${esc(t('colActions'))}</th></tr></thead>
-        <tbody>${files.map(f => `
-          <tr>
-            <td>${ficon(f.name)}</td>
-            <td class="name-cell" title="${esc(f.name)}">${esc(f.name)}</td>
-            <td class="num">${fmtSize(f.size)}</td>
-            <td class="num">${f.share_count}</td>
-            <td class="num">${f.download_count}</td>
-            <td class="num">${fmtTime(f.uploaded_at)}</td>
-            <td><div class="actions-cell">
-              <button class="btn sm primary" data-share="${f.id}">${esc(t('createShare'))}</button>
-              <button class="btn sm" data-direct="${f.id}" style="background:rgba(250,204,21,0.15);border-color:rgba(250,204,21,0.35);color:#fde68a">${esc(t('createDirect'))}</button>
-              <button class="btn sm danger" data-del="${f.id}" data-name="${esc(f.name)}">${esc(t('del'))}</button>
-            </div></td>
-          </tr>`).join('')}
-        </tbody>
-      </table></div>` : `<div class="empty"><div class="icon">📭</div>${esc(t('noFiles'))}</div>`}
-    </div>`;
+/* ═══════════ 文件管理器状态 ═══════════
+   FM.data 直接就是 /api/admin/dirs 的返回（含 dirs / files / breadcrumb / writable）。 */
+const FM = { path: null, view: 'details', thumb: 150, data: null, start: null, sel: new Set() };
+/** 系统保留目录名（与服务端 vfs.ts 的常量保持一致） */
+const RECYCLE_DIR_NAME = 'Recycle_Bin';
+/** 缩略图尺寸滑杆的范围（HTML 与 JS 共用，改一处即可） */
+const THUMB_MIN = 80, THUMB_MAX = 320;
 
-  const dz = $('#dropzone'), fi = $('#file-input');
-  dz.onclick = () => fi.click();
-  dz.ondragover = e => { e.preventDefault(); dz.classList.add('over'); };
-  dz.ondragleave = () => dz.classList.remove('over');
-  dz.ondrop = e => { e.preventDefault(); dz.classList.remove('over'); uploadFiles([...e.dataTransfer.files]); };
-  fi.onchange = () => { uploadFiles([...fi.files]); fi.value = ''; };
+/* ════════════════════════════════════════════════════════════════
+ * 缩略图小图缓存
+ * 为什么要有这一整套：以前缩略图模式是 <img src="/api/admin/files/:id/raw">，
+ * 也就是为了在 80~320px 的**方块**里显示中心一小块，而把整张原图
+ * （常见 4000×3000、甚至 6000×4000 的几 MB 大图）下载 + 全图解码；
+ * CSS 的 object-fit:cover 又只显示居中那一块 —— 流量和解码内存全花在看不见的地方。
+ * 一屏几十张就把标签页卡死，拖动滑杆重排时更是直接假死。
+ *
+ * 现在的做法（两阶段）：
+ *   1) 优先读 /api/admin/thumbs/{id}?w=… —— 一张几十 KB 的正方形小图，
+ *      解码只有目标档位的像素量（默认档位 384² ≈ 15 万像素 vs 原图 1200 万像素）；
+ *      手里有**够清晰**的那档就直接用它，不去碰原图。
+ *   2) 小图还没有 ⇒ 回落读原图，但**只在视口附近**才挂 src（远处留空占位），
+ *      图一解码完就用 canvas 裁一张"中心正方形 + 当前档位"的 JPEG 回传给后端存好，
+ *      成功后把这个 <img> 换成小图（顺手释放大图的解码内存），
+ *      并记进 THUMB_HAVE，以后就算重开目录也直接走小图。
+ *   3) 滑杆拉大 / 列数变少 ⇒ **停稳 1s**（THUMB_SETTLE_MS）后补一趟升档（queueThumbUpgrade + scheduleThumbUpgrade）：
+ *      旧档位的小图只能被浏览器拉伸，拉到最大就是一片糊，所以必须重新按新档位裁一张。
+ *      还在显示原图的那些直接用内存里的原图重裁（零额外流量）；
+ *      已经换成小图的重新取一次原图再裁（原图有 1 小时 HTTP 缓存，多数是缓存命中）。
+ * ════════════════════════════════════════════════════════════════ */
+/** 小图宽度档位（与后端 admin.ts 的 THUMB_WIDTHS 一致，改一处要两处一起改） */
+const THUMB_W = [128, 192, 256, 384, 512, 768];
+/** 回传小图的体积上限（768² q72 一般 ≤120KB，512KB 足够宽松） */
+const THUMB_MAX_UPLOAD = 512 * 1024;
+/**
+ * 滑杆 / 列数停稳多久才动"升档"这一趟（毫秒）。
+ * 手一松开就数满 1s —— 太早动会在用户还在来回微调时白下一次原图，太晚又变迟钝。
+ */
+const THUMB_SETTLE_MS = 1000;
+/**
+ * 会话内已确认"缓存小图存在"的文件 id → 已经生成过的档位列表（升序）。
+ * 存**列表**而不是单个值是有原因的：滑杆拖小再拖大时能直接命中那张旧档位的小图，
+ * 不必再下一遍原图重裁；反过来"档位不够"也能一眼看出来，触发升档（见 queueThumbUpgrade）。
+ */
+const THUMB_HAVE = new Map();
+/** 已经有的、且不小于 want 的最小档位（一张都没有就返回 0 ⇒ 得走原图） */
+function thumbFit(id, want){
+  const a = (THUMB_HAVE.get(id) || []).filter(w => w >= want);
+  return a.length ? Math.min.apply(null, a) : 0;
+}
+/** 手上最好的那档（可能低于 want）——拖动滑杆时先拿它顶住画面，
+ *  既比"重新挂原图反复解码"便宜得多，也符合"停稳后再换成当前档位"的预期。 */
+function thumbBest(id){
+  const a = THUMB_HAVE.get(id) || [];
+  return a.length ? Math.max.apply(null, a) : 0;
+}
+function thumbMark(id, w){
+  const a = THUMB_HAVE.get(id) || [];
+  if(a.indexOf(w) < 0) THUMB_HAVE.set(id, a.concat(w));
+}
+/** "看得见"判定（视口 ±600px）：升档只管这一圈的图，远处重裁纯属白烧流量 */
+function thumbNear(im){
+  const r = im.getBoundingClientRect();
+  return r.bottom > -600 && r.top < (window.innerHeight + 600);
+}
+const THUMB_PENDING = new Set();
+let thumbIO = null, thumbQ = [], thumbBusy = false, thumbTimer = null, thumbUpgradeT = null;
 
-  $$('[data-share]').forEach(b => b.onclick = () => openShareModal(b.dataset.share));
-  $$('[data-direct]').forEach(b => b.onclick = () => openDirectModal(b.dataset.direct));
-  $$('[data-del]').forEach(b => b.onclick = async () => {
-    if(!(await confirmDialog(t('deleteFileT'), t('deleteFileD', {name: b.dataset.name})))) return;
-    await api(`/api/admin/files/${b.dataset.del}`, { method:'DELETE' });
-    toast(t('fileDeleted'));
-    loadFiles();
+/** 小图档位：方框最大 320 CSS px（滑杆上限），2× 屏要 640 设备像素 → 取最接近的档位 */
+function thumbNeed(){
+  const dpr = Math.min(2, window.devicePixelRatio || 1);   // 3× 屏也只按 2× 生成：肉眼看不出差别，省一半流量
+  const box = Math.max(THUMB_MIN, Math.min(THUMB_MAX, FM.thumb || 150));
+  const want = box * dpr;
+  for(const w of THUMB_W) if(w >= want) return w;
+  return THUMB_W[THUMB_W.length - 1];
+}
+const thumbUrl = (id, w) => `/api/admin/thumbs/${encodeURIComponent(id)}?w=${w}`;
+const rawUrl = id => `/api/admin/files/${encodeURIComponent(id)}/raw`;
+
+/** 只给"视口附近"的图挂 src —— 远处保持空占位，避免一屏几十张大图同时解码 */
+function mountThumbs(){
+  const imgs = $$('#fm-list img.timg');
+  if(!imgs.length) return;
+  if(!thumbIO){
+    thumbIO = new IntersectionObserver(es => {
+      const want = thumbNeed();
+      for(const en of es){
+        if(!en.isIntersecting) continue;
+        thumbIO.unobserve(en.target);
+        if(en.target.dataset.mounted) continue;
+        en.target.dataset.mounted = '1';
+        const id = en.target.dataset.thumb;
+        // 已经有缓存小图：够清晰（≥ want）就用它，一字节原图都不碰；
+        // 档位不够（上一趟按 80 生成的 128，现在要 384）就先挂手上最好的那档顶住画面 ——
+        // 直接回头挂原图的话，拖滑杆时每个 60ms 的重建都会重新解码一遍大图，页面立刻卡死；
+        // 随后 scheduleThumbUpgrade 在停稳后换成"当前档位"的清晰小图。
+        const fit = thumbFit(id, want) || thumbBest(id);
+        en.target.dataset.mode = fit ? 'thumb' : 'raw';
+        en.target.dataset.vw = fit || 0;
+        en.target.dataset.w  = fit || want;
+        en.target.src = fit ? thumbUrl(id, fit) : rawUrl(id);
+        if(fit && fit < want) scheduleThumbUpgrade();
+      }
+    }, { rootMargin: '700px 0px' });
+    // load 事件不冒泡，只能挂在捕获阶段（整个页面只挂这一次）
+    document.addEventListener('load', e => {
+      const im = e.target;
+      if(!im || !im.classList || !im.classList.contains('timg')) return;
+      // 挂载时挂的就是"手上最好的那档小图"（vw === w）：这个 load 是 im.src 换小图触发的，
+      // 再排一次等于把原图重下一遍、重裁一张一模一样的图 —— 拖动滑杆时每挂一张就多几 MB 流量。
+      // 真正要换档一律由 scheduleThumbUpgrade / queueThumbUpgrade 在**停稳后**统一做。
+      // 保底：万一上一次裁图上传失败了（vw 仍停在旧档、w 是目标档），两者不等 ⇒ 仍会重试。
+      if(im.dataset.vw && im.dataset.vw === im.dataset.w) return;
+      queueThumbGen(im);
+    }, true);
+  }
+  for(const im of imgs){ if(!im.dataset.mounted) thumbIO.observe(im); }
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+/** canvas / fetch 万一不回调也不能把整条队列卡死 —— 超时就按 fallback 处理 */
+const withTimeout = (p, ms, fallback) => Promise.race([Promise.resolve(p), sleep(ms).then(() => fallback)]);
+
+/** 原图解码完了：排队生成小图（一次只做一张，且等页面闲下来再做）。
+ *  ⚠️ 这里**不挑 mode**——已经显示旧小图的（dataset.mode === 'thumb'）也要能排队升档，
+ *     那正是"滑杆拉大之后发糊"的根因所在（旧小图只能被浏览器拉伸缩放）。 */
+function queueThumbGen(im, want){
+  const id = im.dataset.thumb;
+  if(!id || THUMB_PENDING.has(id)) return;
+  const w = want || +im.dataset.w || thumbNeed();
+  // 还显示着原图时，原图本身就比目标小（比如 800×600 的图裁成 192 就够了），生成了也白费流量
+  if(im.dataset.mode === 'raw' && (!im.naturalWidth || im.naturalWidth <= w)) return;
+  THUMB_PENDING.add(id);
+  im.dataset.w = w;                    // 目标档位改了，后面 genThumb 直接按新档位裁
+  thumbQ.push(im);
+  clearTimeout(thumbTimer);
+  thumbTimer = setTimeout(drainThumbGen, 700);
+}
+
+/**
+ * 补一趟"升档"扫描：滑杆被拖大 / 列数变少之后，屏幕上显示的小图还是**旧档位**
+ * （比如先按 150 生成了 192，拖到 320 就要 384，直接拉伸就会发虚）。
+ * 两条纪律：
+ *   1) 只扫**视口附近**的图 —— 远处重裁了也看不见，纯烧流量；
+ *   2) 只升不降 —— 缩小的那档浏览器本来就会降采样，看着不糊。
+ */
+function queueThumbUpgrade(seen){
+  const want = thumbNeed();
+  const done = seen || new Set();
+  for(const im of $$('#fm-list img.timg')){
+    const id = im.dataset.thumb;
+    if(!id || done.has(id)) continue;
+    const cur = +im.dataset.vw || 0;
+    if(cur >= want) continue;                                          // 已经够清晰
+    if(!thumbNear(im)) continue;                                       // 看不见的不管
+    if(im.dataset.mode === 'raw' && im.naturalWidth && im.naturalWidth <= want) continue;
+    done.add(id);
+    queueThumbGen(im, want);
+  }
+}
+
+/**
+ * 滑杆 / 列数一变，就排一趟"**停稳后**升档"。
+ * 为什么必须抖（THUMB_SETTLE_MS = 1000ms，即滑杆停手满 1s 才动手）：
+ * 拖动过程中每一帧都在重建整列表（renderFileList 是 60ms 节流），
+ * 边拖边下原图重裁会把页面拖死；手一停住再动手，用户看到的才是"拉大 → 停手 1s → 变清晰"。
+ * 取 1s 而不是更短的抖动值，是为了躲开"用户还在微调、马上还要再拖一下"的中间态：
+ * 拖到最大往往要来回拉几段，抖太短会在第一段落点上就开工，下一秒又被自己作废，
+ * 白白重下一次几 MB 的原图。每次 scheduleThumbUpgrade 都会清掉上一颗定时器，
+ * 所以只有**最后一次停手**满 1s 才真正升档。
+ */
+function scheduleThumbUpgrade(){
+  clearTimeout(thumbUpgradeT);
+  thumbUpgradeT = setTimeout(() => {
+    thumbUpgradeT = null;
+    queueThumbUpgrade(new Set());
+    drainThumbGen();
+  }, THUMB_SETTLE_MS);
+}
+
+async function drainThumbGen(){
+  if(thumbBusy){                       // 上一轮还没干完：重新排一次，别让这批图永远没人管
+    clearTimeout(thumbTimer);
+    thumbTimer = setTimeout(drainThumbGen, 900);
+    return;
+  }
+  thumbBusy = true;
+  try{
+    // 最多转 4 圈：每圈先补一趟升档扫描，再把排到的做掉（滑杆连续拖动时可能连着要升档）
+    const done = new Set();
+    let rounds = 0;
+    while(rounds++ < 4){
+      queueThumbUpgrade(done);
+      if(!thumbQ.length) break;
+      const im = thumbQ.shift();
+      try{ await withTimeout(genThumb(im), 30000, null); }catch(e){}
+      // 做完了（含超时/失败）才把这个 id 从"进行中"里摘掉：失败的那张下次还有机会重试
+      try{ THUMB_PENDING.delete(im.dataset.thumb); }catch(e){}
+      await sleep(0);                  // 让出主线程，别把滚动/拖滑杆卡住
+    }
+  }finally{
+    thumbBusy = false;
+    // 自愈：收工时队列里还压着任务（典型是最后一张大图"下载完"才入队，这轮已经扫过了），
+    // 一次性 setTimeout 容易接不上，任务就永远停在原图上了。这里再排一轮兜底。
+    // 注意不能直接判 !thumbTimer 就跳过：那个 id 可能是**已经触发过**的陈旧值，
+    // 判出来 false 反而不排 —— 任务照样卡住。统一 clear 掉再排。
+    if(thumbQ.length){
+      clearTimeout(thumbTimer);
+      thumbTimer = setTimeout(() => { thumbTimer = null; drainThumbGen(); }, 500);
+    }
+  }
+}
+
+/** 重新拉一遍原图并解码成 ImageBitmap —— 只给"升档"用（旧小图没法放大出清晰版）。
+ *  原图响应带 max-age=3600，同一会话里重开基本都是浏览器缓存命中，不是真走网络。 */
+async function fetchRawBitmap(id){
+  try{
+    const res = await withTimeout(fetch(rawUrl(id), {
+      credentials: 'same-origin', cache: 'force-cache',
+    }), 30000, null);
+    if(!res || !res.ok) return null;
+    const blob = await res.blob();
+    return await withTimeout(createImageBitmap(blob), 20000, null);
+  }catch(e){ return null; }
+}
+
+/** 裁一张"目标档位"的小图回传存进存储；显示中的 <img> 最后换成这张小图。
+ *  ⚠️ mode === 'raw'：屏幕上的原图就是现成采样源，直接裁 ⇒ 零额外流量。
+ *  ⚠️ mode === 'thumb'：说明这张图**已经换成过小图**了（旧档位），只能重新取原图
+ *     再裁一遍。不做这一步，滑杆拉大时用户看到的就是被拉伸的糊图。 */
+async function genThumb(im){
+  const id = im.dataset.thumb, w = +im.dataset.w;
+  if(!id || !w || !im.naturalWidth) return;
+  let src = im, bmp = null, nw = im.naturalWidth, nh = im.naturalHeight;
+  if(im.dataset.mode !== 'raw'){
+    bmp = await fetchRawBitmap(id);
+    if(!bmp) return;
+    src = bmp; nw = bmp.width; nh = bmp.height;
+  }
+  try{
+    const blob = await withTimeout(thumbBlob(src, nw, nh, w), 15000, null);
+    if(!blob || blob.size > THUMB_MAX_UPLOAD) return;
+    const ok = await withTimeout(fetch(thumbUrl(id, w), {
+      method: 'POST', headers: { 'content-type': 'image/jpeg' }, body: blob, credentials: 'same-origin',
+    }).then(res => res.ok).catch(() => false), 20000, false);
+    if(!ok) return;
+    thumbMark(id, w);
+    im.dataset.mode = 'thumb';       // 先改标记再换 src：换 src 后 img 里就只剩这张小图了
+    im.dataset.vw = w;
+    im.src = thumbUrl(id, w);   // 换成小图：省内存，也让"当前这屏"以后都走小图
+  }finally{
+    if(bmp && bmp.close) bmp.close();
+  }
+}
+
+/** canvas 裁"中心正方形"（与 CSS object-fit:cover 的取景完全一致）+ 缩到目标分辨率 */
+async function thumbBlob(src, nw, nh, w){
+  const s = Math.min(nw, nh);
+  const sx = (nw - s) / 2, sy = (nh - s) / 2;
+  // 路径一：原生"裁一块 + 直接缩到目标"，浏览器内部走最优采样（比一步 drawImage 快一个量级）
+  try{
+    const bmp = await createImageBitmap(src, sx, sy, s, s, {
+      resizeWidth: w, resizeHeight: w, resizeQuality: 'high',
+    });
+    const c = document.createElement('canvas');
+    c.width = c.height = w;
+    const g = c.getContext('2d');
+    g.imageSmoothingQuality = 'high';
+    g.drawImage(bmp, 0, 0);
+    if(bmp.close) bmp.close();
+    const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.72));
+    if(blob) return blob;
+  }catch(e){ /* 老浏览器不支持 resize 选项 → 走路径二 */ }
+
+  // 路径二：两步缩。10000px 一步缩到 384 很慢，先降到 ≤1536 再落到目标（经典渐进降采样）
+  try{
+    const mid = Math.min(1536, Math.max(w * 2, 256));
+    const c1 = document.createElement('canvas');
+    c1.width = c1.height = mid;
+    const g1 = c1.getContext('2d');
+    g1.imageSmoothingEnabled = true; g1.imageSmoothingQuality = 'high';
+    g1.drawImage(src, sx, sy, s, s, 0, 0, mid, mid);
+    const c = document.createElement('canvas');
+    c.width = c.height = w;
+    const g = c.getContext('2d');
+    g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+    g.drawImage(c1, 0, 0, mid, mid, 0, 0, w, w);
+    return await new Promise(res => c.toBlob(res, 'image/jpeg', 0.72));
+  }catch(e){ return null; }
+}
+
+/** 上传时装好小图：新传的大图第一次浏览也会卡，先在这儿顺手裁一张存起来 */
+async function genThumbOnUpload(id, file){
+  if(!id || !file || file.size < 96 * 1024) return;
+  const w = thumbNeed();
+  try{
+    const bmp = await createImageBitmap(file);
+    const blob = await thumbBlob(bmp, bmp.width, bmp.height, w);
+    if(bmp.close) bmp.close();
+    if(!blob || blob.size > THUMB_MAX_UPLOAD) return;
+    const r = await fetch(thumbUrl(id, w), {
+      method: 'POST', headers: { 'content-type': 'image/jpeg' }, body: blob, credentials: 'same-origin',
+    });
+    if(r.ok) thumbMark(id, w);
+  }catch(e){ /* 生成失败不影响上传与浏览，下次浏览会再试一次 */ }
+}
+
+function fmLoadPrefs(){
+  try{
+    const v = localStorage.getItem('fmView');
+    if(v === 'thumbs' || v === 'details') FM.view = v;
+    const th = parseInt(localStorage.getItem('fmThumb') || '', 10);
+    if(th >= 80 && th <= 320) FM.thumb = th;
+  }catch(e){ /* 存储不可用（隐私模式 / file://）时用默认值即可 */ }
+}
+function fmSavePrefs(){
+  try{ localStorage.setItem('fmView', FM.view); localStorage.setItem('fmThumb', String(FM.thumb)); }catch(e){}
+}
+
+/* ═══════════ 列排序（Windows 资源管理器风格）═══════════
+   点表头 → 按这一列排；再点同一列 → 反向；点别的列 → 换列并用该列默认方向
+   （数值/时间列默认降序：先看到最大/最新，符合直觉；名称列默认升序）。
+
+   约定：
+   · 空值（— / 这列没数据）恒排最后，升降序都一样 —— 否则一堆空行插在正中间最碍眼；
+   · **文本列一律忽略大小写**（sensitivity:'base'）：Apple / apple / APPLE 视为同字母、排在一起；
+     真正相等时再用区分大小写做 tie-break，保证顺序确定（详见 sortRows 里的注释）；
+   · 状态按列表（files / trash / storage）各自存 localStorage，换页签、刷新都还在；
+   · 表头只须写 <th class="sortable" data-sortlist="files" data-sort="size">，
+     点击由下面**一个**全局监听器兜住，以后新增列表只要往 SORT_FMT 里加即可。 */
+const numOf  = v => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+const timeOf = v => { const d = v ? new Date(v).getTime() : NaN; return Number.isFinite(d) ? d : 0; };
+const isBlank = v => v == null || v === '' || v === DASH;
+
+/** 每列怎么取值（返回**可比较**的值：文本列给字符串，数值/时间列给数字；desc 表示默认降序） */
+const SORT_FMT = {
+  /* 文件页：目录与文件混排，目录永远在前（见 renderFileList） */
+  files: {
+    name:     { get: r => String(r.name ?? '') },
+    size:     { get: r => numOf(r.size), desc: 1 },
+    mtime:    { get: r => timeOf(r.mtime || r.uploaded_at), desc: 1 },
+    res:      { get: r => numOf(r.width) * 1e5 + numOf(r.height), desc: 1 },   // 先比宽、同宽比高
+    duration: { get: r => numOf(r.duration_ms), desc: 1 },
+    fps:      { get: r => numOf(r.fps), desc: 1 },
+    vbr:      { get: r => numOf(r.v_bitrate), desc: 1 },
+    abr:      { get: r => numOf(r.a_bitrate), desc: 1 },
+  },
+  /* 回收站 */
+  trash: {
+    name:   { get: r => String(r.name ?? '') },
+    origin: { get: r => String(r.original_path || '') },
+    size:   { get: r => numOf(r.size), desc: 1 },
+    by:     { get: r => String(r.deleted_by || '') },
+    at:     { get: r => timeOf(r.deleted_at), desc: 1 },
+    left:   { get: r => r.days_left == null ? null : numOf(r.days_left) },
+  },
+  /* 存储浏览（目录仍永远在最前，见下面 storage 的 sortRows 调用） */
+  storage: {
+    name:  { get: r => String(r.name ?? '') },
+    size:  { get: r => numOf(r.size), desc: 1 },
+    time:  { get: r => timeOf(r.uploaded_at || r.lastModified), desc: 1 },
+    owner: { get: r => String(r.owner || '') },
+    loc:   { get: r => String(r.path || '') },
+  },
+};
+const SORT_DEFAULT = {
+  files:   { key: 'name', dir: 'asc' },
+  trash:   { key: 'at',   dir: 'desc' },
+  storage: { key: 'name', dir: 'asc' },
+};
+const SORT_STATE = {};        // 列表名 → { key, dir }（内存 + localStorage）
+const SORT_RERENDER = {};     // 列表名 → 排序完怎么重画（各列表渲染时登记）
+const SORT_ROWS = {};         // 列表名 → 已经存好 html 的行数组（只重排、不重新请求）
+const SORT_LABEL = {};        // 列表名 → { 列key: 表头里显示的标题 }（缩略图模式没表头，靠它显示当前排的是哪一列）
+
+function sortLoad(name){
+  try{
+    const v = JSON.parse(localStorage.getItem('fmSort_' + name) || '');
+    if(v && SORT_FMT[name] && SORT_FMT[name][v.key])
+      SORT_STATE[name] = { key: v.key, dir: v.dir === 'desc' ? 'desc' : 'asc' };
+    else SORT_STATE[name] = Object.assign({}, SORT_DEFAULT[name]);
+  }catch(e){ SORT_STATE[name] = Object.assign({}, SORT_DEFAULT[name]); }
+}
+function sortSave(name){
+  try{ localStorage.setItem('fmSort_' + name, JSON.stringify(SORT_STATE[name])); }catch(e){}
+}
+/** 按当前列/方向排一份副本（不动原数组） */
+function sortRows(name, rows){
+  const st = SORT_STATE[name], f = (SORT_FMT[name] || {})[st.key];
+  if(!f || !rows || rows.length < 2) return rows || [];
+  const dir = st.dir === 'desc' ? -1 : 1;
+  return rows.slice().sort((a, b) => {
+    const x = f.get(a), y = f.get(b);
+    const bx = isBlank(x), by = isBlank(y);
+    if(bx && by) return 0;
+    if(bx) return 1;                     // 空值沉底，不受升降序影响
+    if(by) return -1;
+    // 主比较（三条一起看，缺一都会翻车）：
+    //   · sensitivity:'base'   = **忽略大小写**（Apple / apple / APPLE 一律判相等）；
+    //   · numeric:true         = 文件名里的数字按数值比（IMG2 < IMG10）；
+    //   · ignorePunctuation    = **把 - _ . 空格 当不存在**（Windows 资源管理器也是这么排的）。
+    //     少了这一条，COSH-001.jpg 与 cosh002_001.jpg 会在第 4 个字符上比 '-' vs '0'，
+    //     于是 412 个大写 COSH-* 全跑完后才轮到小写 cosh*，看起来像"小写没排上来"。
+    //     加上它之后两者比的是数字 001 vs 002，小写自然就串进数字序里（实测 cosh002_001.jpg
+    //     从索引 740 提到 336，紧挨 COSH-001.jpg）。zh-Hans-CN 让中文按拼音。
+    const c = (typeof x === 'number' && typeof y === 'number')
+      ? x - y
+      : String(x).localeCompare(String(y), 'zh-Hans-CN',
+          { numeric: true, sensitivity: 'base', ignorePunctuation: true });
+    if(c) return c * dir;
+    /* ⚠️ 关键：主比较相等时**不能**直接 return 0。
+       返回 0 的话 sort 退化成"稳定排序"，同字母的几行会照搬后端返回的先后，
+       结果就是每个字母组里都是"大写在前、小写在后"（用户看到"所有小写都排在大写后面"）。
+       ⇒ 再补一发**区分大小写**的原生比较做确定性 tie-break：
+       ICU 的原生序是小写在前（'a' < 'A'），于是同字母必然紧挨在一起且顺序稳定可预期。 */
+    if(typeof x === 'number' || typeof y === 'number') return 0;
+    return String(x).localeCompare(String(y), 'zh-Hans-CN', { numeric: true }) * dir;
+  });
+}
+/** 可点击排序的表头单元格（整格可点，Tab 能聚焦、Enter/空格也能切） */
+function sortTh(name, key, label, width){
+  const st = SORT_STATE[name], on = st.key === key;
+  (SORT_LABEL[name] = SORT_LABEL[name] || {})[key] = label;   // 记下来给缩略图模式的"当前排序"按钮用
+  const tip = on ? (st.dir === 'asc' ? '升序 ▲｜点击改为降序' : '降序 ▼｜点击改为升序') : '点击按此列排序';
+  return `<th class="sortable${on ? ' sorted' : ''}" data-sortlist="${name}" data-sort="${key}"
+    tabindex="0" style="width:${width}" title="${esc(label + '｜' + tip)}"><span>${esc(label)}</span>${
+      on ? `<i class="ar">${st.dir === 'asc' ? '▲' : '▼'}</i>` : ''}</th>`;
+}
+/** 把当前状态刷到页面上所有表头（列表重画之后调用，保证箭头和状态一致） */
+function syncSortArrows(){
+  $$('th.sortable[data-sortlist]').forEach(th => {
+    const st = SORT_STATE[th.dataset.sortlist], on = st && st.key === th.dataset.sort;
+    th.classList.toggle('sorted', !!on);
+    let ar = th.querySelector('.ar');
+    if(on){
+      if(!ar){ ar = document.createElement('i'); ar.className = 'ar'; th.appendChild(ar); }
+      ar.textContent = st.dir === 'asc' ? '▲' : '▼';
+    }else if(ar){ ar.remove(); }
+  });
+}
+/** 缩略图模式没有表头可点，用这个按钮把"当前按什么排"显示出来，
+ *  点它就是切回详细信息视图（到那边点表头才改得了排序）。 */
+function fmSortNote(){
+  const st = SORT_STATE.files, lb = (SORT_LABEL.files || {})[st.key] || t('colName');
+  return `<button class="btn sm" id="fm-sort-note" title="${esc(lb + '（点击切回详细信息改排序）')}">⇅ ${esc(lb)} ${st.dir === 'asc' ? '↑' : '↓'}</button>`;
+}
+function applySort(th){
+  const name = th.dataset.sortlist, key = th.dataset.sort, map = SORT_FMT[name];
+  if(!map || !map[key]) return;
+  const st = SORT_STATE[name];
+  if(st.key === key) st.dir = st.dir === 'asc' ? 'desc' : 'asc';
+  else { st.key = key; st.dir = map[key].desc ? 'desc' : 'asc'; }
+  sortSave(name);
+  syncSortArrows();
+  try{ (SORT_RERENDER[name] || (() => {}))(); }catch(e){ console.warn('排序后重画失败', e); }
+}
+// ⚠️ 一个监听器兜住所有列表：以后新增可排序列/列表都不用再写绑定
+document.addEventListener('click', e => {
+  const th = e.target && e.target.closest ? e.target.closest('th.sortable[data-sort][data-sortlist]') : null;
+  if(!th || e.target.closest('input, button, a, label')) return;
+  applySort(th);
+});
+document.addEventListener('keydown', e => {
+  if(e.key !== 'Enter' && e.key !== ' ') return;
+  const th = e.target && e.target.closest ? e.target.closest('th.sortable[data-sort][data-sortlist]') : null;
+  if(!th) return;
+  e.preventDefault();
+  applySort(th);
+});
+
+/* ── 全局快捷键 ────────────────────────────────────────
+   Esc  = 退一层：开着预览先关预览；否则清掉选中（顶掉"取消选择"按钮）；再否则去掉光标。
+   空格/Enter = 打开光标所在那张图；预览开着时它们改成"关闭预览"。
+   ⚠️ 输入框里、表头排序、以及任何弹窗开着的时候都不抢键。 */
+document.addEventListener('keydown', e => {
+  const el = e.target;
+  const tn = (el && el.tagName || '').toLowerCase();
+  if(tn === 'input' || tn === 'textarea' || tn === 'select' || (el && el.isContentEditable)) return;
+  if(el && el.closest && el.closest('th.sortable')) return;
+  if(document.getElementById('modal')) return;
+  if(e.key === 'Escape'){
+    e.preventDefault();
+    if(LB && LB.open){ lbClose(); return; }
+    if(FM.sel.size){ FM.sel.clear(); syncChecks(); renderSelBar(); curClear(); return; }
+    if(CUR.fid) curClear();
+    return;
+  }
+  if(e.key !== ' ' && e.key !== 'Enter') return;
+  e.preventDefault();
+  if(LB && LB.open){ lbClose(); return; }
+  if(!CUR.fid) return;
+  const p = curCanPreview();
+  if(p) openPreview(p.id, CUR.list);
+  else if(PIX[CUR.list || 'files'] && PIX[CUR.list][CUR.fid])
+    toast(LANG === 'zh' ? '只能预览图片文件（视频请用播放器打开）' : 'Only images can be previewed', 'err');
+});
+
+['files', 'trash', 'storage'].forEach(sortLoad);
+// 排序之后怎么重画：文件列表直接重画（不重新请求，数据还在 FM.data 里）；
+// 回收站整块重画（动作按钮很多，重画最稳）；存储浏览只重排本地已加载的行（见 render() 里的注册）。
+SORT_RERENDER.files = () => renderFileList();
+SORT_RERENDER.trash = () => loadTrash();
+
+const DASH = '—';
+function fmtRes(f){ return (f.width && f.height) ? `${f.width}×${f.height}` : DASH; }
+function fmtDur(ms){
+  if(!ms) return DASH;
+  const s = Math.round(ms/1000), h = Math.floor(s/3600), m = Math.floor(s%3600/60), ss = s%60;
+  const p = x => String(x).padStart(2,'0');
+  return h ? `${h}:${p(m)}:${p(ss)}` : `${m}:${p(ss)}`;
+}
+function fmtRate(bps){
+  if(!bps) return DASH;
+  if(bps >= 1e6){
+    // ≥10 Mbps 保留 1 位小数：31.4 Mbps 比 31.40 Mbps 更短，正好躲开列宽截断
+    const m = bps / 1e6;
+    return (m >= 10 ? m.toFixed(1) : m.toFixed(2)) + ' Mbps';
+  }
+  return Math.round(bps/1e3) + ' kbps';
+}
+/** 帧率：最多两位小数，且去掉多余的 .00（29.97 保留，30 不显示成 30.00） */
+function fmtFps(v){
+  if(!v) return DASH;
+  const n = Math.round(Number(v) * 100) / 100;
+  return Number.isFinite(n) ? String(n) : DASH;
+}
+const isImgFile = f => /^image\//.test(f.mime || '') || /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(f.name || '');
+const isVidFile = f => /^video\//.test(f.mime || '') || /\.(mp4|m4v|mov|webm|mkv|avi)$/i.test(f.name || '');
+
+/* ── 多选 / 重命名 / 移动 ──────────────────────────────
+   选中项用一个 Set 存，键带前缀：'f:<文件id>'、'd:<目录路径>' ——
+   这样一次框选里文件和目录可以混着来，批量操作时再分流。 */
+
+/** 进入某个路径。回收站是"派生视图"（服务端明确拒绝直接列它），交给回收站页签渲染。 */
+function goPath(p){
+  if(p === '/' + RECYCLE_DIR_NAME){ switchTab('trash'); return; }
+  loadFiles(p);
+}
+
+function selKeys(){ return [...FM.sel]; }
+function selFiles(){ return selKeys().filter(k => k.startsWith('f:')).map(k => k.slice(2)); }
+function selDirs(){ return selKeys().filter(k => k.startsWith('d:')).map(k => k.slice(2)); }
+
+function renderSelBar(){
+  const host = $('#fm-selbar');
+  if(!host) return;
+  const n = FM.sel.size;
+  if(!n){ host.innerHTML = ''; return; }
+  // 选了目录就下载不了（浏览器不支持下载目录）⇒ 按钮置灰，比点了没反应强
+  const nf = selFiles().length, nd = selDirs().length;
+  const zh = LANG === 'zh';
+  // ⚠️ 只要选中里**有目录**（哪怕同时勾了文件）就置灰：浏览器下载不了目录，
+  //    与其让用户点了才发现少了东西，不如一开始就告诉他"把目录的勾去掉"。
+  const dlOff = !nf || nd > 0;
+  const dlTip = dlOff
+    ? (nd ? (zh ? '有目录被选中，浏览器无法下载目录——请取消勾选目录' : 'A folder is selected and folders cannot be downloaded — deselect it')
+          : (zh ? '先勾选至少一个文件' : 'Select at least one file first'))
+    : (zh ? '下载所选文件' : 'Download selected files');
+  host.innerHTML = `<div class="fm-sel">
+    <span>${esc(t('selectedN', { n }))}</span>
+    <button class="btn sm ok" id="sel-dl" ${dlOff ? 'disabled' : ''} title="${esc(dlTip)}">⬇ ${esc(zh ? '下载' : 'Download')}</button>
+    <button class="btn sm" id="sel-move">${esc(t('moveTo'))}</button>
+    <button class="btn sm danger" id="sel-del">${esc(t('del'))}</button>
+  </div>`;
+  // ⚠️ 没有"取消选择"按钮了：Esc 就是它的等价动作（见底部全局 keydown）
+  $('#sel-dl').onclick = () => doDownload(selFiles());
+  $('#sel-del').onclick = batchDelete;
+  $('#sel-move').onclick = () => moveDialog(selFiles(), selDirs());
+}
+
+/** 按 FM.sel 回写复选框（含表头"全选"的三态判断） */
+function syncChecks(){
+  $$('#fm-list .fm-ck').forEach(c => { c.checked = FM.sel.has(c.dataset.key); });
+  const boxes = $$('#fm-list .fm-ck').filter(c => !c.disabled);
+  const on = boxes.filter(c => c.checked).length;
+  $$('.fm-all').forEach(a => {
+    a.checked = boxes.length > 0 && on === boxes.length;
+    a.indeterminate = on > 0 && on < boxes.length;
   });
 }
 
-function uploadFiles(files){
-  for(const file of files){
-    if(file.size > 100 * 1024 * 1024){ toast(t('tooLarge', {name: file.name}), 'err'); continue; }
+/**
+ * 批量删除（默认：移入回收站）。
+ *
+ * ⚠️ 这里**必须** try/catch：一次删上千项时服务端会花很久，旧代码是
+ *    `await api(...)` 直接往上抛 —— 未捕获的 Promise rejection 只会静默地什么都不做，
+ *    表现就是"点了确认之后没反应"。删完（成功或失败）都要刷新列表，
+ *    否则用户看到的是旧数据，同样像"没删掉"。
+ */
+/** 清选择：FM.sel + 复选框 + 操作条要一起回状态。
+ *  ⚠️ 少了 syncChecks/renderSelBar 的话，行首的勾还亮着、操作条却不出来了，
+ *     用户再点那个勾等于点了个空壳（看着像"点了没反应"）。 */
+function clearSel(){
+  FM.sel.clear();
+  curClear();
+  syncChecks();
+  renderSelBar();
+}
+
+async function batchDelete(){
+  const files = selFiles(), dirs = selDirs();
+  const total = files.length + dirs.length;
+  if(!total) return;
+  const mode = await deleteDialog(total);
+  // 取消也要清选择：留着勾就像"还选着"，用户下次点那个勾是"取消勾选"，看着又像卡住了
+  if(mode === null){ clearSel(); return; }
+  if(mode === 'purge'){ await batchPurge(files, dirs); return; }
+
+  const btn = $('#sel-del');
+  if(btn) btn.disabled = true;
+  let n = 0, err = null;
+  try{
+    if(files.length){
+      const r = await api('/api/admin/files/delete', { method:'POST', body: JSON.stringify({ ids: files }) });
+      n += r.trashed || 0;
+    }
+    for(const p of dirs){
+      const r = await api('/api/admin/dirs/delete', { method:'POST', body: JSON.stringify({ path: p }) });
+      n += r.trashed || 0;
+    }
+  }catch(e){ err = e; }
+  if(btn) btn.disabled = false;
+  clearSel();
+  loadFiles(FM.path);                       // 无论成败都刷：删失败了也要让用户看到还是老样子
+  if(err) toast(err.message || (LANG === 'zh' ? '删除失败' : 'Delete failed'), 'err');
+  else toast(t('trashedN', { n }));
+}
+
+/** 彻底删除：抹掉文件行 + 存储对象，不可恢复。二次确认由 purgeDialog 兜。 */
+async function batchPurge(files, dirs){
+  const total = files.length + dirs.length;
+  // 取消 ⇒ 直接回文件界面，什么都不做（选择也一起清掉，别留半截状态）
+  if(!(await purgeDialog(total))){ clearSel(); return; }
+  const btn = $('#sel-del');
+  if(btn) btn.disabled = true;
+  let n = 0, err = null;
+  try{
+    for(const p of dirs){
+      const r = await api('/api/admin/dirs/purge', { method:'DELETE', body: JSON.stringify({ path: p }) });
+      n += r.purged || 0;
+    }
+    if(files.length){
+      const r = await api('/api/admin/files/purge', { method:'DELETE', body: JSON.stringify({ ids: files }) });
+      n += r.purged || 0;
+    }
+  }catch(e){ err = e; }
+  if(btn) btn.disabled = false;
+  clearSel();
+  loadFiles(FM.path);
+  if(err) toast((LANG === 'zh' ? '彻底删除失败：' : 'Purge failed: ') + (err.message || ''), 'err');
+  else toast(t('purgeDone', { n }));
+}
+
+/* ── 移动到… ────────────────────────────────────────
+   选择器而不是手打路径：目标清单由服务端按**当前身份**筛过（/api/admin/dirs/writable），
+   所以普通用户的下拉里只有自己的文件夹、管理员才看得到别人的文件夹 ——
+   权限判断只在服务端做一份，前端只是把结果渲染出来。
+   移动目录时把"它自己和它的子孙"从候选里去掉：移进自己的子树会把这棵子树从树上摘掉。 */
+async function moveDialog(fileIds, dirPaths){
+  let paths = [];
+  try{
+    const r = await api('/api/admin/dirs/writable');
+    paths = r.paths || [];
+  }catch(e){ toast(e.message, 'err'); return; }
+
+  const banned = dirPaths.map(p => p + '/');
+  const options = paths.filter(p => p !== FM.path && !dirPaths.includes(p) && !banned.some(b => p.startsWith(b)));
+  // 当前目录不一定在清单里（例如停在自己的父目录），补进去，方便"原地不动"时也能看到上下文
+  const list = FM.path && FM.path !== '/' && !options.includes(FM.path) ? [FM.path, ...options] : options;
+
+  openModal(`
+    <h3>${esc(t('moveT'))}</h3>
+    <div class="field">
+      <label>${esc(t('moveTo'))}</label>
+      ${list.length
+        ? `<select id="mv-target">${list.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('')}</select>`
+        : `<div class="tip">${esc(t('moveNoTarget'))}</div>`}
+    </div>
+    <div class="tip">${esc(t('moveCount', { n: fileIds.length + dirPaths.length }))}</div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">
+      <button class="btn" id="mv-cancel">${esc(t('cancel'))}</button>
+      <button class="btn primary" id="mv-ok" ${list.length ? '' : 'disabled'}>${esc(t('confirm'))}</button>
+    </div>`);
+  $('#mv-cancel').onclick = closeModal;
+  $('#mv-ok').onclick = async () => {
+    const sel = $('#mv-target'); if(!sel) return;
+    try{
+      const r = await api('/api/admin/move', {
+        method:'POST',
+        body: JSON.stringify({ ids: fileIds, dirs: dirPaths, target: sel.value })
+      });
+      closeModal();
+      toast(t('movedN', { n: r.moved || 0 }));
+      FM.sel.clear();
+      loadFiles(FM.path);
+    }catch(e){ toast(e.message, 'err'); }
+  };
+}
+
+function renameDialog(kind, key, oldName){
+  openModal(`
+    <h3>${esc(t('renameT'))}</h3>
+    <div class="field">
+      <label>${esc(t('renameT'))}</label>
+      <input type="text" id="rn-name" value="${esc(oldName || '')}" spellcheck="false" autocapitalize="off">
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">
+      <button class="btn" id="rn-cancel">${esc(t('cancel'))}</button>
+      <button class="btn primary" id="rn-ok">${esc(t('confirm'))}</button>
+    </div>`);
+  const inp = $('#rn-name'); if(inp){ inp.focus(); inp.select(); }
+  $('#rn-cancel').onclick = closeModal;
+  $('#rn-ok').onclick = async () => {
+    const name = ($('#rn-name').value || '').trim();
+    if(!name) return;
+    try{
+      if(kind === 'dir') await api('/api/admin/dirs/rename', { method:'POST', body: JSON.stringify({ path: key, name }) });
+      else await api('/api/admin/files/rename', { method:'POST', body: JSON.stringify({ id: key, name }) });
+      closeModal();
+      loadFiles(FM.path);
+    }catch(e){ toast(e.message, 'err'); }
+  };
+}
+
+/* ═══════════ 列数控制（自动 + 手动）═══════════
+   核心取舍：真正的列数**永远由可用宽度算出来**（auto），手动只调一个"偏置 bias"。
+   于是两个需求同时成立 ——
+     · 横向拉伸/收窄窗口 → auto 变化 → 列数自动增减；
+     · 用户按 ± → bias 变化 → 在当前基础上增减。
+   若把手动值写死，缩放就会失效（那是另一套需求）；若只保留自动，就没了手动。
+   点中间的「列数」文字 = bias 归零 = 回到纯自动。 */
+const COL = { bias: 0, eff: 1, actual: 1 };
+
+/* ── 每个页签的"单列目标宽度"；unit=0 表示该页固定单列、不受列数控制 ──
+   为什么按页签给不同目标宽：媒体的详细信息表要放 8 列（约需 880px），
+   设置页是卡片（400px 足够）。用同一个目标宽会互相拖累。
+   bias 是**全局**的：在任意页面按 ± ，所有支持分列的页面都会一起变。 */
+const TAB_LAYOUT = {
+  files:    { unit: 880 },   // 缩略图模式改用滑杆值，见 colUnit()
+  trash:    { unit: 900 },
+  settings: { unit: 400 },
+  storage:  { unit: 900 },
+  shares:   { unit: 900 },
+  direct:   { unit: 900 },
+  logs:     { unit: 900 },
+  codes:    { unit: 900 },
+  security: { unit: 900 },   // 仅下方审计表参与分列；顶部筛选条是独立元素，天然单列
+  bans:     { unit: 0 },     // 手动封禁 IP —— 用户明确要求固定单列
+  global:   { unit: 0 },     // 全球下载分布 —— 图表，固定单列满宽
+  overview: { unit: 0 },     // 概览自带栅格
+  webdav:   { unit: 0 },
+};
+function layoutOf(tab){ return TAB_LAYOUT[tab || currentTab] || { unit: 0 }; }
+function supportsCols(tab){ return layoutOf(tab).unit > 0; }
+function colMax(){ return FM.view === 'thumbs' ? 20 : 6; }
+
+/** 当前页签的单列目标宽度（0 = 不支持分列） */
+function colUnit(){
+  const lay = layoutOf();
+  if(lay.unit <= 0) return 0;
+  // 文件页的缩略图模式：单块目标宽 = 滑杆值 —— 这就是滑杆与列数的联动点
+  if(currentTab === 'files' && FM.view === 'thumbs') return FM.thumb;
+  return lay.unit;
+}
+function viewAvail(){
+  const host = $('#view');
+  return Math.max(280, (host && host.clientWidth ? host.clientWidth : window.innerWidth) - 2);
+}
+function autoCols(){
+  const unit = colUnit();
+  return unit <= 0 ? 1 : Math.max(1, Math.floor(viewAvail() / unit));
+}
+/** 缩略图模式：由"生效列数"反推单块宽度，用于把滑杆位置同步过去（双向联动） */
+function thumbFromCols(){
+  const v = Math.round(viewAvail() / Math.max(1, COL.eff));
+  return Math.min(THUMB_MAX, Math.max(THUMB_MIN, v));
+}
+
+/** 算出生效列数 → 写进 CSS 变量 → 更新顶栏标签。返回是否发生了变化 */
+function syncCols(opts){
+  const fromSlider = !!(opts && opts.fromSlider);
+  const can = supportsCols();
+  const max = can ? colMax() : 1;
+  const eff = can ? Math.min(max, Math.max(1, autoCols() + COL.bias)) : 1;
+  const changed = eff !== COL.eff;
+  COL.eff = eff;
+  document.documentElement.style.setProperty('--ui-cols', String(eff));
+  const num = $('#col-num'); if(num) num.textContent = String(eff);
+  const lbl = $('#col-lbl'); if(lbl) lbl.classList.toggle('manual', can && COL.bias !== 0);
+  const ctl = $('#colctl'); if(ctl) ctl.classList.toggle('off', !can);
+  const mi = $('#col-minus'), pl = $('#col-plus');
+  if(mi) mi.disabled = !can || eff <= 1;
+  if(pl) pl.disabled = !can || eff >= max;
+  // 缩略图模式：把滑杆同步成"与列数一致的大小"。
+  // 用户正在拖滑杆时不回写 —— 否则会跟手指较劲（值被反复覆盖）。
+  if(can && !fromSlider && currentTab === 'files' && FM.view === 'thumbs'){
+    const s = $('#fm-thumb');
+    // 列数变化（± 按钮 / 改窗口宽度 / 点标题复位）会顺手把滑杆挪到对应大小 ⇒ 同样要触发升档
+    if(s){ const v = String(thumbFromCols()); if(s.value !== v){ s.value = v; FM.thumb = +v; scheduleThumbUpgrade(); } }
+  }
+  return changed;
+}
+
+/* ═══ 分列渲染：两套容器共用同一个列数 ═══ */
+
+/** 页面把"实际渲染出的列数"回报给顶栏。
+ *  为什么需要：顶栏数字必须等于页面上真实存在的列数 —— 内容太少时会自动少分几列，
+ *  若仍显示目标值就会出现"写着 5 列、实际 2 列"的错位（用户报过同类 bug）。 */
+function reportActualCols(n){
+  COL.actual = n;
+  const el = $('#col-num'); if(el) el.textContent = String(n);
+}
+
+/** 卡片类容器：把直接子项按列优先均分进 .fcol。
+ *  可重复调用 —— 已经分过列时会先从 .fcol 里拍平再重排，所以 ± 调整无需重新请求接口。 */
+function flowColumns(wrap){
+  if(!wrap) return;
+  const items = [...wrap.children].flatMap(c =>
+    (c.classList && c.classList.contains('fcol')) ? [...c.children] : [c]);
+  if(!items.length) return;
+  // 每列至少 2 个才值得分列，否则会出现"一列一个、剩下几列空的"的破碎布局
+  const n = Math.max(1, Math.min(COL.eff, Math.floor(items.length / 2)));
+  wrap.innerHTML = '';
+  const cols = Array.from({ length: n }, () => {
+    const d = document.createElement('div'); d.className = 'fcol'; return d;
+  });
+  const per = Math.max(1, Math.ceil(items.length / n));
+  items.forEach((el, i) => cols[Math.min(n - 1, Math.floor(i / per))].appendChild(el));
+  cols.forEach(c => wrap.appendChild(c));
+  reportActualCols(n);
+}
+
+/** 按列数重排一个 .tbl-cols 容器（从首次分列时保存的源数据重建） */
+function renderTableCols(container){
+  const src = container.__tblSrc;
+  if(!src) return;
+  const rows = src.rows;
+  // 同样：每列至少 2 行，行数太少就少分几列（并把实际列数回报给顶栏）
+  const n = Math.max(1, Math.min(COL.eff, Math.floor(rows.length / 2)));
+  container.innerHTML = '';
+  const grid = document.createElement('div');
+  grid.className = 'fmc';
+  splitColumns(rows, n).forEach(col => {
+    const box = document.createElement('div'); box.className = 'fcol';
+    const scroller = document.createElement('div'); scroller.style.overflowX = 'auto';
+    const tbl = document.createElement('table'); tbl.className = src.cls;
+    const thead = document.createElement('thead'); thead.innerHTML = src.thead;
+    const tbody = document.createElement('tbody');
+    // ⚠️ 行元素是"搬"过去而不是复制 ⇒ 每行只出现一次，不会产生重复 id / 重复绑定
+    col.forEach(r => tbody.appendChild(r));
+    tbl.appendChild(thead); tbl.appendChild(tbody);
+    scroller.appendChild(tbl); box.appendChild(scroller); grid.appendChild(box);
+  });
+  container.appendChild(grid);
+  reportActualCols(n);
+}
+
+/** 把 #view 里的普通表格变成可随列数重排的容器。
+ *  rebuild=false：首次（把 table 换成容器并保存源数据）
+ *  rebuild=true ：重排（列数变了，用保存的源数据重建） */
+function splitListTables(root, rebuild){
+  if(!root) return;
+  if(rebuild){
+    root.querySelectorAll('.tbl-cols').forEach(c => { if(c.__tblSrc) renderTableCols(c); });
+    return;
+  }
+  [...root.querySelectorAll('table.tbl')].forEach(t => {
+    const tbody = t.tBodies[0];
+    if(!tbody) return;
+    const container = document.createElement('div');
+    container.className = 'tbl-cols';
+    container.__tblSrc = {
+      cls: t.className,
+      thead: t.tHead ? t.tHead.innerHTML : '',
+      rows: [...tbody.rows],
+    };
+    const holder = t.parentElement;          // 通常是 <div style="overflow-x:auto">
+    holder.replaceWith(container);
+    renderTableCols(container);
+  });
+}
+
+/** 列数变化后重排当前页（不重新请求接口） */
+function reflowCurrentTab(rebuild){
+  const wrap = $('#view .auto-cols');
+  if(wrap) flowColumns(wrap);
+  splitListTables($('#view'), !!rebuild);
+}
+
+function applyCols(){
+  const changed = syncCols();
+  if(!changed) return;
+  // 文件页要按新列数重新切分表格；其它页签就地重排（rebuild=true 用已保存的行数据重建）
+  if(currentTab === 'files'){ if(FM.data) renderFileList(); return; }
+  reflowCurrentTab(true);
+}
+function saveColBias(){ try{ localStorage.setItem('colBias', String(COL.bias)); }catch(e){} }
+function loadColBias(){
+  try{
+    const v = parseInt(localStorage.getItem('colBias') || '0', 10);
+    if(Number.isFinite(v)) COL.bias = Math.max(-5, Math.min(8, v));
+  }catch(e){}
+}
+function bindColCtl(){
+  const p = $('#col-plus'), m = $('#col-minus'), l = $('#col-lbl');
+  if(!p || !m || !l) return;
+  p.onclick = () => { if(COL.eff >= colMax()) return toast(t('colsMax')); COL.bias++; saveColBias(); applyCols(); };
+  m.onclick = () => { if(COL.eff <= 1) return toast(t('colsMin')); COL.bias--; saveColBias(); applyCols(); };
+  l.onclick = () => { COL.bias = 0; saveColBias(); applyCols(); toast(t('colsAutoBack')); };
+}
+// 窗口尺寸变化 → 重算列数（这就是"横向拉伸网页时列数仍会自动增减"）
+let colResizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(colResizeTimer);
+  colResizeTimer = setTimeout(() => applyCols(), 120);
+});
+
+/* ═══════════ 媒体元数据探测（在浏览器里做）═══════════
+   为什么不放服务端：Worker 运行时没有 ffprobe / ImageMagick，
+   而浏览器自带解码器（Image / HTMLVideoElement），探测零额外成本、也不占 Worker CPU。
+   探测是**尽力而为**：拿不到就留空（界面显示 —），绝不阻塞上传。 */
+function b64Json(obj){
+  try{
+    const bytes = new TextEncoder().encode(JSON.stringify(obj));
+    let bin = '';
+    for(const b of bytes) bin += String.fromCharCode(b);
+    return btoa(bin);
+  }catch(e){ return ''; }
+}
+const readU32 = (b,o) => (((b[o]<<24)|(b[o+1]<<16)|(b[o+2]<<8)|b[o+3])>>>0);
+const fourcc  = (b,o) => String.fromCharCode(b[o],b[o+1],b[o+2],b[o+3]);
+
+/**
+ * 轻量 MP4/MOV 解析：取帧率与**分轨**码率。
+ * 关键点：只读 box 头、按 size 直接跳过内容，所以即使 mdat 有几十 GB 也不会真读它。
+ * 拿不到（如分片 MP4、WebM）就返回 null，由调用方留空。
+ */
+async function probeMp4(file){
+  const read = async (start, len) => new Uint8Array(await file.slice(start, start + len).arrayBuffer());
+  const tracks = [];
+  try{
+    async function walk(start, end, tr){
+      let p = start;
+      while(p + 8 <= end){
+        const h = await read(p, Math.min(16, end - p));
+        if(h.length < 8) return;
+        let size = readU32(h, 0);
+        const type = fourcc(h, 4);
+        let hdr = 8;
+        if(size === 1){                                   // 64 位长度
+          if(h.length < 16) return;
+          size = readU32(h,8) * 4294967296 + readU32(h,12); hdr = 16;
+        } else if(size === 0){ size = end - p; }           // 延伸到末尾
+        if(size < hdr || p + size > end) return;
+        const at = p + hdr, stop = p + size;
+
+        if(type === 'trak'){
+          const nt = { kind: '', timescale: 0, duration: 0, bytes: 0, samples: 0 };
+          tracks.push(nt);
+          await walk(at, stop, nt);
+        } else if(type === 'moov' || type === 'mdia' || type === 'minf' || type === 'stbl' || type === 'edts'){
+          await walk(at, stop, tr);
+        } else if(tr && type === 'hdlr'){
+          const b = await read(at, Math.min(16, stop - at));
+          if(b.length >= 12) tr.kind = fourcc(b, 8);       // payload 偏移 8 = handler_type
+        } else if(tr && type === 'mdhd'){
+          const b = await read(at, Math.min(32, stop - at));
+          if(b[0] === 1 && b.length >= 32){
+            tr.timescale = readU32(b,20); tr.duration = readU32(b,24) * 4294967296 + readU32(b,28);
+          } else if(b.length >= 20){
+            tr.timescale = readU32(b,12); tr.duration = readU32(b,16);
+          }
+        } else if(tr && type === 'stts'){
+          const b = await read(at, Math.min(16, stop - at));
+          if(b.length >= 8){
+            const n = readU32(b,4);
+            const take = Math.min(n, 512);
+            const e = await read(at + 8, take * 8);
+            let sc = 0;
+            for(let i = 0; i + 7 < e.length; i += 8) sc += readU32(e, i);
+            tr.samples = sc;
+          }
+        } else if(tr && type === 'stsz'){
+          const b = await read(at, Math.min(16, stop - at));
+          if(b.length >= 12){
+            const fixed = readU32(b,4), cnt = readU32(b,8);
+            if(fixed > 0){
+              tr.bytes = fixed * cnt;
+            } else {
+              const tbl = await read(at + 12, cnt * 4);     // 变长样本表：整张读进来求和
+              let sum = 0;
+              for(let i = 0; i + 3 < tbl.length; i += 4) sum += readU32(tbl, i);
+              tr.bytes = sum;
+            }
+          }
+        }
+        p += size;
+      }
+    }
+    await walk(0, file.size, null);
+    const v = tracks.find(x => x.kind === 'vide');
+    const a = tracks.find(x => x.kind === 'soun');
+    const durSec = v && v.timescale ? v.duration / v.timescale : 0;
+    const fps = v && v.samples && durSec > 0 ? v.samples / durSec : 0;
+    const out = {
+      fps: fps > 0 && fps < 1000 ? Math.round(fps * 1000) / 1000 : null,
+      v_bitrate: v && durSec > 0 && v.bytes ? Math.round(v.bytes * 8 / durSec) : null,
+      a_bitrate: a && durSec > 0 && a.bytes ? Math.round(a.bytes * 8 / durSec) : null,
+    };
+    // 三项都拿不到 ⇒ 当作"解析失败"返回 null（统一语义：拿不到就是拿不到）
+    return (out.fps || out.v_bitrate || out.a_bitrate) ? out : null;
+  }catch(e){ return null; }
+}
+
+async function probeFile(file){
+  const meta = {};
+  if(file.lastModified) meta.mtime = file.lastModified;
+  const img = /^image\//.test(file.type || '') || /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i.test(file.name);
+  const vid = /^video\//.test(file.type || '') || /\.(mp4|m4v|mov|webm|mkv|avi)$/i.test(file.name);
+
+  if(img){
+    try{
+      const bmp = await createImageBitmap(file);
+      meta.width = bmp.width; meta.height = bmp.height;
+      if(bmp.close) bmp.close();
+    }catch(e){
+      try{
+        const wh = await new Promise((res, rej) => {
+          const url = URL.createObjectURL(file), im = new Image();
+          im.onload = () => { res([im.naturalWidth, im.naturalHeight]); URL.revokeObjectURL(url); };
+          im.onerror = () => { URL.revokeObjectURL(url); rej(new Error('img')); };
+          im.src = url;
+        });
+        meta.width = wh[0]; meta.height = wh[1];
+      }catch(e2){ /* 探测失败就留空 */ }
+    }
+    return meta;
+  }
+
+  if(vid){
+    // 时长与分辨率：交给浏览器解码器，跨容器格式都准
+    try{
+      const el = await new Promise((res, rej) => {
+        const url = URL.createObjectURL(file), v = document.createElement('video');
+        let settled = false;
+        const fin = ok => {
+          if(settled) return; settled = true;
+          URL.revokeObjectURL(url); v.removeAttribute('src');
+          ok ? res(v) : rej(new Error('vid'));
+        };
+        v.preload = 'metadata'; v.muted = true;
+        v.onloadedmetadata = () => fin(true);
+        v.onerror = () => fin(false);
+        v.src = url;
+        setTimeout(() => fin(false), 12000);
+      });
+      if(Number.isFinite(el.duration) && el.duration > 0) meta.duration_ms = Math.round(el.duration * 1000);
+      if(el.videoWidth) { meta.width = el.videoWidth; meta.height = el.videoHeight; }
+    }catch(e){ /* 解码不了就算了 */ }
+    // 帧率与分轨码率：只有 MP4 家族能解析出（WebM/MKV 留空）
+    if(/mp4|m4v|mov|quicktime/i.test(file.type || '') || /\.(mp4|m4v|mov)$/i.test(file.name)){
+      const m = await probeMp4(file);
+      if(m){
+        if(m.fps) meta.fps = m.fps;
+        if(m.v_bitrate) meta.v_bitrate = m.v_bitrate;
+        if(m.a_bitrate) meta.a_bitrate = m.a_bitrate;
+      }
+    }
+  }
+  return meta;
+}
+
+/* ═══════════ 文件管理器（资源管理器风格） ═══════════ */
+async function loadFiles(p){
+  fmLoadPrefs();
+  const target = p || FM.path || FM.start || null;
+  const q = target ? ('?path=' + encodeURIComponent(target)) : '';
+  FM.data = await api('/api/admin/dirs' + q);
+  FM.path = FM.data.path || '/';
+  FM.sel.clear();          // 换目录就清空选择（选择是"当前目录内"的概念）
+  renderFM();
+}
+
+function renderFM(){
+  const d = FM.data || { dirs: [], files: [], breadcrumb: [], writable: false, path: '/' };
+  const crumbs = [{ name: t('fmRoot'), path: '/' }, ...(d.breadcrumb || [])];
+  const crumbHtml = crumbs.map((c, i) =>
+    (i ? '<span class="sep">›</span>' : '') +
+    `<a data-go="${esc(c.path)}">${esc(c.name)}</a>`).join('');
+
+  $('#view').innerHTML = `
+  <div class="glass section fm-host" id="fm-host">
+    <div class="fm-bar">
+      <div class="crumb">${crumbHtml}</div>
+      <div style="flex:1"></div>
+      <div id="fm-selbar"></div>
+      <!-- ⚠️ 缩略图滑杆要贴在全选左边（用户明确要求），所以它是控制区第一项，不是最后一项 -->
+      ${FM.view === 'thumbs' ? `<div class="fm-sizer">${esc(t('fmThumbSize'))}
+        <input type="range" id="fm-thumb" min="${THUMB_MIN}" max="${THUMB_MAX}" step="10" value="${FM.thumb}"></div>` : ''}
+      <button class="btn sm" id="fm-selall">☑ ${esc(t('selectAll'))}</button>
+      ${FM.view === 'thumbs' ? fmSortNote() : ''}
+      ${d.writable === false ? '' : `<button class="btn sm" id="fm-newdir">＋ ${esc(t('fmNewFolder'))}</button>`}
+      <button class="btn sm primary" id="fm-upload">⬆ ${esc(t('fmUpload'))}</button>
+      ${d.writable === false ? '' : `<button class="btn sm" id="fm-upload-dir">📁 ${esc(t('fmUploadDir'))}</button>`}
+      <div class="fm-seg">
+        <button id="fm-v-details" class="${FM.view === 'details' ? 'on' : ''}">☰ ${esc(t('fmViewDetails'))}</button>
+        <button id="fm-v-thumbs" class="${FM.view === 'thumbs' ? 'on' : ''}">▦ ${esc(t('fmViewThumbs'))}</button>
+      </div>
+    </div>
+    <div class="fm-drop" id="fm-drop">${esc(t('fmDropHint'))}</div>
+    <div id="fm-upload-list"></div>
+    <div id="fm-list"></div>
+    <input type="file" id="fm-file" multiple hidden>
+    <input type="file" id="fm-folder" webkitdirectory directory multiple hidden>
+  </div>`;
+
+  const host = $('#fm-host'), fi = $('#fm-file'), drop = $('#fm-drop');
+  // ⚠️ 面包屑的点击必须**在这里**绑定，不能指望 renderFileList → bindRowActions：
+  //    空目录时 renderFileList 会提前 return，于是面包屑从来没被绑上事件、
+  //    表现为"进了子目录后点『根目录』没反应"（用户报的 bug）。
+  $$('[data-go]').forEach(a => a.onclick = e => {
+    if(e.target.closest('input, button')) return;   // 点复选框/操作按钮不该触发跳转
+    e.stopPropagation();
+    goPath(a.dataset.go);
+  });
+  $('#fm-upload').onclick = () => fi.click();
+  fi.onchange = () => { const l = [...fi.files]; fi.value = ''; if(l.length) uploadFiles(l); };
+  const fdir = $('#fm-folder');
+  if(fdir) fdir.onchange = () => {
+    // webkitdirectory 选出来的文件自带 webkitRelativePath，直接照搬即可保留目录结构
+    const l = [...fdir.files].filter(f => f && (f.webkitRelativePath || f.name));
+    fdir.value = '';
+    if(l.length) uploadFiles(l.map(f => ({ file: f, rel: f.webkitRelativePath || f.name })));
+  };
+  $('#fm-upload-dir')?.addEventListener('click', () => fdir && fdir.click());
+  const nd = $('#fm-newdir'); if(nd) nd.onclick = newFolderDialog;
+  // 全选 / 全不选（缩略图模式下没有表头复选框，这个按钮是唯一入口 ⇒ 两种模式都要有）
+  const selAll = $('#fm-selall');
+  if(selAll) selAll.onclick = () => {
+    const boxes = $$('#fm-list .fm-ck').filter(c => !c.disabled);
+    const allOn = boxes.length > 0 && boxes.every(c => c.checked);
+    FM.sel.clear();
+    if(!allOn) boxes.forEach(c => FM.sel.add(c.dataset.key));
+    syncChecks();
+    renderSelBar();
+  };
+  // ⚠️ 切视图必须顺手重算列数：两种视图的"单列目标宽"不一样（缩略图是滑杆值 80~320，
+  //    详细信息是 880）。以前只 renderFM() 不重算 ⇒ 从详细信息切到缩略图时列数还停在 1，
+  //    于是一张卡片撑满一行、整页变成九张通栏大图（每张还在下原图，拖动直接卡死）。
+  $('#fm-v-details').onclick = () => { FM.view = 'details'; fmSavePrefs(); renderFM(); applyCols(); };
+  $('#fm-v-thumbs').onclick  = () => { FM.view = 'thumbs';  fmSavePrefs(); renderFM(); applyCols(); };
+  // 缩略图模式没有表头，"当前排序"按钮点了直接回详细信息（与切视图是同一个动作）
+  const sortNote = $('#fm-sort-note');
+  if(sortNote) sortNote.onclick = () => { FM.view = 'details'; fmSavePrefs(); renderFM(); applyCols(); };
+  const th = $('#fm-thumb');
+  if(th){
+    let thumbTimerId = null;
+    th.oninput = () => {
+      FM.thumb = +th.value; fmSavePrefs();
+      // 滑杆 ↔ 列数 双向联动：滑杆变大 → 单块目标宽变大 → 列数自然变少。
+      // fromSlider 告诉 syncCols 不要回写滑杆位置，否则会跟用户的手指较劲。
+      syncCols({ fromSlider: true });
+      // 拖动时每 input 都重建整列表，大图会反复解码 → 页面直接卡死，这里节流到 60ms
+      clearTimeout(thumbTimerId);
+      thumbTimerId = setTimeout(renderFileList, 60);
+      // 拖完停手满 1s，再补一趟升档：把屏幕上的旧档位小图换成"当前滑杆档位"的小图。
+      // 每次 oninput 都会把上一颗定时器清掉，所以只有最后一段落手点满 1s 才真正开工。
+      scheduleThumbUpgrade();
+    };
+  }
+
+  // 拖拽上传：单独的投放条 + 整个文件区都能接
+  const allowed = d.writable !== false;
+  const hoverOn = e => { e.preventDefault(); e.stopPropagation(); if(allowed) drop.classList.add('over'); };
+  const hoverOff = e => { e.preventDefault(); drop.classList.remove('over'); };
+  host.addEventListener('dragenter', hoverOn);
+  host.addEventListener('dragover', hoverOn);
+  host.addEventListener('dragleave', hoverOff);
+  host.addEventListener('drop', async e => {
+    hoverOff(e);
+    if(!allowed) return;
+    const dt = e.dataTransfer;
+    // 先试目录遍历（拖进来的文件夹要靠 webkitGetAsEntry 才能取到内容）；
+    // 拿不到条目再退回普通 files —— 普通多选文件走这条路，一个空壳都不会有。
+    if(dt && dt.items && dt.items.length){
+      try{
+        const pairs = await filesFromDataTransfer(dt);
+        if(pairs.length){ uploadFiles(pairs); return; }
+      }catch(err){ /* 遍历失败就当普通文件丢，别把这次投放吞掉 */ }
+    }
+    const l = dt && dt.files ? [...dt.files] : [];
+    if(l.length) uploadFiles(l);
+  });
+  drop.addEventListener('click', () => fi.click());
+
+  syncCols();
+  renderFileList();
+  renderSelBar();
+}
+
+/** 把条目按"列优先"均分到 n 列 —— 阅读顺序是自上而下、再进下一列，和报纸一致 */
+function splitColumns(items, n){
+  const out = Array.from({ length: n }, () => []);
+  const per = Math.max(1, Math.ceil(items.length / n));
+  items.forEach((it, i) => out[Math.min(n - 1, Math.floor(i / per))].push(it));
+  return out;
+}
+
+function renderFileList(){
+  const d = FM.data, host = $('#fm-list');
+  if(!d || !host) return;
+  // 登记预览索引：点开大图 / 下载都要按 id 反查"这东西是不是图片、叫什么名字"
+  pixIndex('files', (d.files || []).concat(d.dirs || []));
+  // ⚠️ 目录与文件**分别**排序再拼：目录恒在最前、且始终按名字排（Windows 也是这样分组），
+  //    混在一个数组里排会把文件夹插到文件中间去。
+  const items = [
+    ...sortRows('files', (d.dirs  || []).map(x => ({ isDir: true,  ...x }))),
+    ...sortRows('files', (d.files || []).map(x => ({ isDir: false, ...x }))),
+  ];
+  if(!items.length){
+    host.innerHTML = `<div class="empty"><div class="icon">📂</div>${esc(t('fmEmptyDir'))}</div>`;
+    return;
+  }
+  host.innerHTML = FM.view === 'thumbs' ? thumbsHtml(items) : detailsHtml(items);
+  bindRowActions();
+  mountThumbs();
+}
+
+function detailsRow(it){
+  if(it.isDir){
+    const ro = it.system || it.virtual;      // 系统目录/虚拟目录：不能删、不能改名
+    return `<tr class="fm-dir" data-go="${esc(it.path)}">
+      <td class="ck">${ro ? '' : `<input type="checkbox" class="fm-ck" data-key="d:${esc(it.path)}" title="${esc(t('selectAll'))}">`}</td>
+      <td><div class="nm"><span>${it.virtual ? '🗑️' : '📁'}</span><span class="tx" title="${esc(it.name)}${it.count ? ' · ' + String(it.count).toLocaleString() + ' ' + esc(t('fmFileCount')) : ''}">${esc(it.name)}</span></div></td>
+      <td class="num">${it.size ? fmtSize(it.size) : DASH}</td><td class="num">${DASH}</td><td class="num">${DASH}</td>
+      <td class="num">${DASH}</td><td class="num">${DASH}</td><td class="num">${DASH}</td><td class="num">${DASH}</td>
+      <td><div class="fm-act">${ro ? '' : `
+        <button data-move-dir="${esc(it.path)}" data-name="${esc(it.name)}" title="${esc(t('moveTo'))}">📂</button>
+        <button data-rename-dir="${esc(it.path)}" data-name="${esc(it.name)}" title="${esc(t('rename'))}">✏️</button>
+        <button class="dg" data-rmdir="${esc(it.path)}" title="${esc(t('del'))}">🗑</button>`}</div></td>
+    </tr>`;
+  }
+  const f = it, vid = isVidFile(f);
+  return `<tr data-fid="${esc(f.id)}">
+    <td class="ck"><input type="checkbox" class="fm-ck" data-key="f:${esc(f.id)}" title="${esc(t('selectAll'))}"></td>
+    <td><div class="nm">${ficon(f.name)}<span class="tx" title="${esc(f.name)}">${esc(f.name)}</span></div></td>
+    <td class="num">${fmtSize(f.size)}</td>
+    <td class="num">${fmtTime(f.mtime || f.uploaded_at)}</td>
+    <td class="num">${fmtRes(f)}</td>
+    <td class="num">${vid ? fmtDur(f.duration_ms) : DASH}</td>
+    <td class="num">${vid ? fmtFps(f.fps) : DASH}</td>
+    <td class="num">${vid ? fmtRate(f.v_bitrate) : DASH}</td>
+    <td class="num">${vid ? fmtRate(f.a_bitrate) : DASH}</td>
+    <td><div class="fm-act">
+      <button data-move="${esc(f.id)}" data-name="${esc(f.name)}" title="${esc(t('moveTo'))}">📂</button>
+      <button data-rename="${esc(f.id)}" data-name="${esc(f.name)}" title="${esc(t('rename'))}">✏️</button>
+      <button data-share="${f.id}" title="${esc(t('createShare'))}">🔗</button>
+      <button data-del="${f.id}" data-name="${esc(f.name)}" class="dg" title="${esc(t('del'))}">🗑</button>
+    </div></td>
+  </tr>`;
+}
+
+function detailsHtml(items){
+  const n = Math.max(1, COL.eff);
+  // 列宽按"8 个媒体列 + 名称"实测调过：单列表 ~840px 时仍能完整显示 3840×2160 与 31.4 Mbps。
+  // 每个表头都带 title：万一列被压窄，鼠标悬停还能看到完整列名。
+  const head = `<tr>
+      <th class="ck"><input type="checkbox" class="fm-all" title="${esc(t('selectAll'))}"></th>
+      ${sortTh('files','name',t('colName'),'28%')}
+      ${sortTh('files','size',t('colSize'),'66px')}
+      ${sortTh('files','mtime',t('colModified'),'116px')}
+      ${sortTh('files','res',t('colResolution'),'100px')}
+      ${sortTh('files','duration',t('colDuration'),'74px')}
+      ${sortTh('files','fps',t('colFps'),'52px')}
+      ${sortTh('files','vbr',t('colVBitrate'),'94px')}
+      ${sortTh('files','abr',t('colABitrate'),'94px')}
+      <th style="width:108px" title="${esc(t('colActions'))}">${esc(t('colActions'))}</th>
+    </tr>`;
+  return `<div class="fmc">${splitColumns(items, n).map(col => `
+    <div class="fcol"><table class="fm-tbl">
+      <thead>${head}</thead>
+      <tbody>${col.map(detailsRow).join('')}</tbody>
+    </table></div>`).join('')}</div>`;
+}
+
+function thumbsHtml(items){
+  /** 卡片左上角的勾选框。系统目录不给勾（与详细信息模式一致） */
+  const ck = (key, ro) => `<label class="thumb-ck" title="${esc(t('selectAll'))}">
+    <input type="checkbox" class="fm-ck" data-key="${esc(key)}" ${ro ? 'disabled' : ''}></label>`;
+  return `<div class="fm-thumbs">${items.map(it => {
+    if(it.isDir){
+      const ro = it.system || it.virtual;
+      return `<div class="thumb" data-go="${esc(it.path)}" title="${esc(it.name)}${it.count ? ' · ' + String(it.count).toLocaleString() + ' ' + esc(t('fmFileCount')) : ''}">
+        ${ro ? '' : ck('d:' + it.path, false)}
+        <div class="pv"><span class="ph">${it.virtual ? '🗑️' : '📁'}</span></div>
+        <div class="mt"><div class="n">${esc(it.name)}</div><div class="s">${it.size ? esc(fmtSize(it.size)) : esc(t('fmFolderCount'))}</div></div>
+      </div>`;
+    }
+    const img = isImgFile(it), vid = isVidFile(it);
+    // 图片先不给 src：由 mountThumbs() 按"是否靠近视口"决定挂小图还是原图，
+    // 这样一屏几十张时只有看得见的那几张在真正解码。
+    const pv = img
+      ? `<img class="timg" loading="lazy" decoding="async" fetchpriority="low" alt=""
+               data-thumb="${esc(it.id)}" data-w="${thumbNeed()}" width="${THUMB_MIN}" height="${THUMB_MIN}">`
+      : `<span class="ph">${vid ? '🎬' : esc((extOf(it.name) || '?').toUpperCase().slice(0, 4))}</span>`;
+    const extra = vid ? fmtDur(it.duration_ms) : (it.width ? `${it.width}×${it.height}` : '');
+    return `<div class="thumb" data-fid="${esc(it.id)}" title="${esc(it.name)}">
+      ${ck('f:' + it.id, false)}
+      <div class="pv">${pv}</div>
+      <div class="mt">
+        <div class="n">${esc(it.name)}</div>
+        <div class="s">${esc(fmtSize(it.size))}${extra && extra !== DASH ? ' · ' + esc(extra) : ''}</div>
+      </div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function bindRowActions(){
+  $$('[data-go]').forEach(el => el.onclick = e => {
+    if(e.target.closest('input, button')) return;   // 复选框/操作按钮上的点击不进入目录
+    e.stopPropagation();
+    goPath(el.dataset.go);
+  });
+
+  // ── 多选 ──
+  $$('#fm-list .fm-ck').forEach(c => c.onchange = () => {
+    if(c.checked) FM.sel.add(c.dataset.key); else FM.sel.delete(c.dataset.key);
+    syncChecks();
+    renderSelBar();
+  });
+  $$('.fm-all').forEach(a => a.onchange = () => {
+    FM.sel.clear();
+    if(a.checked) $$('#fm-list .fm-ck').forEach(c => { if(!c.disabled) FM.sel.add(c.dataset.key); });
+    syncChecks();
+    renderSelBar();
+  });
+
+  // ── 移动（行内按钮：文件和目录都支持）──
+  $$('[data-move]').forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    moveDialog([b.dataset.move], []);
+  });
+  $$('[data-move-dir]').forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    moveDialog([], [b.dataset.moveDir]);
+  });
+
+  // ── 重命名 ──
+  $$('[data-rename]').forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    renameDialog('file', b.dataset.rename, b.dataset.name);
+  });
+  $$('[data-rename-dir]').forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    renameDialog('dir', b.dataset.renameDir, b.dataset.name);
+  });
+
+  $$('[data-del]').forEach(b => b.onclick = async e => {
+    e.stopPropagation();
+    if(!(await confirmDialog(t('deleteFileT'), t('deleteFileD', { name: b.dataset.name })))) return;
+    await api(`/api/admin/files/${b.dataset.del}`, { method:'DELETE' });
+    toast(t('fileDeleted'));
+    loadFiles(FM.path);
+  });
+  $$('[data-rmdir]').forEach(b => b.onclick = async e => {
+    e.stopPropagation();
+    const name = String(b.dataset.rmdir).split('/').filter(Boolean).pop() || '';
+    if(!(await confirmDialog(t('deleteFileT'), t('deleteFileD', { name })))) return;
+    await api('/api/admin/dirs/delete', { method:'POST', body: JSON.stringify({ path: b.dataset.rmdir }) });
+    toast(t('fileDeleted'));
+    loadFiles(FM.path);
+  });
+  $$('[data-share]').forEach(b => b.onclick = e => { e.stopPropagation(); openShareModal(b.dataset.share); });
+}
+
+/* ═══════════ 预览索引（每个列表的 id → 条目）═══════════
+   「文件 / 存储浏览 / 回收站」三处都要能点开看大图，预览前得知道某一行
+   到底是图片还是视频、叫什么、多大。三处各自在渲染时往这里登记一份。 */
+const PIX = { files: {}, trash: {}, storage: {} };
+function pixIndex(list, rows){
+  const bag = (PIX[list] = PIX[list] || {});
+  for(const r of (rows || [])) if(r && r.id) bag[r.id] = r;
+}
+
+/* ═══════════ 条目光标（Windows 资源管理器里的那个"当前项"）═══════════
+   点一下条目 → 一圈蓝边（光标）；再点别的 → 光标跟过去。
+   光标**独立于复选框多选**：复选框决定"批量操作管哪些"，光标决定"我现在指着哪个"。
+   空格 / Enter / 双击 = 打开光标所指的那张图；Esc = 关掉光标（也就取消选择）。 */
+const CUR = { list: null, fid: null };
+const curEsc = s => { try { return CSS.escape(s); } catch(e){ return String(s).replace(/["\\]/g, '\\$&'); } };
+function curOf(node){
+  if(!node || !node.closest) return null;
+  if(node.closest('#stg-tbody')) return 'storage';
+  if(node.closest('#fm-list')) return 'files';
+  return 'trash';
+}
+function curSet(list, fid){ CUR.list = list; CUR.fid = fid; curPaint(); }
+function curClear(){ CUR.list = null; CUR.fid = null; curPaint(); }
+function curEl(){
+  if(!CUR.fid) return null;
+  let root = document;
+  if(CUR.list === 'trash') root = $('#view') || document;
+  else if(CUR.list === 'storage') root = $('#stg-tbody') || document;
+  return root ? root.querySelector(`[data-fid="${curEsc(CUR.fid)}"]`) : null;
+}
+function curPaint(){
+  $$('.cur').forEach(el => el.classList.remove('cur'));
+  if(!CUR.fid) return;
+  const el = curEl();
+  if(!el){ CUR.list = null; CUR.fid = null; return; }   // 列表重画后这项没了，光标自动失效
+  el.classList.add('cur');
+}
+/** 光标所指的条目是不是图片（不是就提示，别静默没反应） */
+function curCanPreview(){
+  const bag = PIX[CUR.list || 'files'] || {};
+  const meta = bag[CUR.fid];
+  if(!meta) return null;
+  return isImgFile(meta) ? { meta, id: CUR.fid } : null;
+}
+
+document.addEventListener('click', e => {
+  const box = e.target && e.target.closest ? e.target.closest('[data-fid]') : null;
+  if(!box) return;
+  if(e.target.closest('input, button, a, label, th.sortable')) return;
+  curSet(curOf(box), box.dataset.fid);
+}, true);   // 捕获阶段：早于行内的 onclick，保证光标一定被设置上
+
+document.addEventListener('dblclick', e => {
+  const box = e.target && e.target.closest ? e.target.closest('[data-fid]') : null;
+  if(!box) return;
+  if(e.target.closest('input, button, a, label')) return;
+  curSet(curOf(box), box.dataset.fid);
+  openPreview(box.dataset.fid, curOf(box));
+});
+
+/* ═══════════ 图片预览（全屏相册式）═══════════
+   滚轮 = 以鼠标为中心缩放；双击 = 1:1；拖 = 平移；
+   点画面外的黑色区域 / Esc / 空格 = 关闭。缩放时用 transform 做，
+   不重排、不重新请求 —— 原图只下一次，之后全靠本地缓存。 */
+const LB_MAX = 12, LB_MIN = 0.1;
+let LB = null;
+
+function lbEl(tag, cls){ const el = document.createElement(tag); if(cls) el.className = cls; return el; }
+
+function openPreview(id, list){
+  const bag = PIX[list || 'files'] || {};
+  const meta = bag[id];
+  if(!meta){ toast(LANG === 'zh' ? '找不到这个条目' : 'Item not found', 'err'); return; }
+  if(!isImgFile(meta)){
+    toast(LANG === 'zh' ? '只能预览图片文件（视频请用播放器打开）' : 'Only image files can be previewed', 'err');
+    return;
+  }
+  if(LB && LB.open){ lbClose(); }
+
+  const bg    = lbEl('div', 'lb-bg');
+  const spin  = lbEl('div', 'lb-spin');
+  const img   = lbEl('img', 'lb-img'); img.alt = meta.name || ''; img.draggable = false;
+  // 先估一下原图真实尺寸（列表里就有 width/height），布局框先按它排，缩放才有基准
+  img.width = meta.width || 0; img.height = meta.height || 0;
+  const tip   = lbEl('div', 'lb-tip');
+  tip.textContent = LANG === 'zh'
+    ? '滚轮缩放 · 双击 1:1 · 拖动查看 · 点画面外 / Esc / 空格 关闭'
+    : 'Wheel zoom · dblclick 1:1 · drag · click outside / Esc / space to close';
+  const bar = lbEl('div', 'lb-bar');
+  const nm = lbEl('div', 'nm'); nm.textContent = meta.name || id;
+  const sub = lbEl('div', 'sub');
+  sub.textContent = (meta.size ? fmtSize(meta.size) : '')
+    + (meta.width && meta.height ? ' · ' + meta.width + '×' + meta.height : '');
+  bar.appendChild(nm); bar.appendChild(sub);
+
+  const wrap = lbEl('div'); wrap.id = 'lb';
+  // 手头已有的小图当模糊底衬（相册那股"先糊后清"），原图到了就把它摘掉 —— 大图也能秒开
+  const have = (typeof THUMB_HAVE !== 'undefined') ? (THUMB_HAVE.get(id) || []) : [];
+  const ph = lbEl('div', 'lb-ph');
+  if(have.length) ph.style.backgroundImage = 'url("' + thumbUrl(id, Math.max.apply(null, have)) + '")';
+  wrap.appendChild(bg); wrap.appendChild(ph); wrap.appendChild(spin); wrap.appendChild(img); wrap.appendChild(tip); wrap.appendChild(bar);
+  document.body.appendChild(wrap);
+  LB = {
+    open: true, id, list: list || 'files', name: meta.name || id,
+    k: 1, tx: 0, ty: 0, el: wrap, img, bg, spin, ph,
+    nw: meta.width || 0, nh: meta.height || 0, fit: 1,
+  };
+  // 布局框先按列表里记的原图尺寸排好：fit 一算就得准，缩放才有稳定基准
+  img.width = LB.nw || 0; img.height = LB.nh || 0;
+  if(LB.nw && LB.nh){ LB.fit = lbFit(); LB.k = LB.fit; }
+  lbPaint();
+
+  const full = new Image();
+  let done = false;
+  full.onload = () => {
+    if(!LB || LB.id !== id || done) return;
+    done = true;
+    LB.nw = full.naturalWidth; LB.nh = full.naturalHeight;
+    LB.fit = lbFit();
+    img.width = LB.nw; img.height = LB.nh;
+    img.src = full.src;
+    if(ph.parentNode) ph.remove();      // 原图到了，模糊底衬退场
+    spin.remove();
+    lbPaint();
+  };
+  full.onerror = () => { if(LB && LB.id === id) spin.remove(); };
+  full.src = rawUrl(id);
+  lbBind();
+}
+
+function lbClose(){
+  if(!LB || !LB.open) return;
+  const el = LB.el, bg = LB.bg;
+  LB.open = false;
+  bg.style.animation = 'none';   // 关掉时别再跑"压暗"动画，直接黑着淡出
+  bg.style.background = '#000';
+  el.classList.add('lb-out');
+  setTimeout(() => { el.remove(); }, 170);
+  lbDragOff();
+  LB = null;
+}
+
+/* ⚠️ 缩放模型（这块的数学踩过坑，改之前务必先看懂）：
+   .lb-img 是 `position:absolute; left/top:50%` + `translate(-50%,-50%)` 居中的，
+   而且 `transform-origin: 50% 50%` —— 也就是说 **scale 只放大画面、中心点一动不动**。
+   于是"图在屏幕上的中心"恒等于 (视口中心 + (tx,ty))，与 k 毫无关系。
+   某图里点 (vx,vy)（单位=原图像素）的屏幕位置是：
+       屏幕 = 视口中心 + (tx,ty) + k * ((vx,vy) - (w/2,h/2))
+   下面两个函数就是这条式子的正反变换；lbZoomAt/lbOneToOne 只要求"锚点下面那一点不动"。
+   早先版本把 `(k-1)*w/2` 也算进了中心里 —— 那是按"scale 绕左上角"推的公式，
+   与 transform-origin:50% 50% 冲突，结果一滚轮图就往左上角飞、双击直接飞出屏幕。 */
+function lbPaint(){
+  if(!LB) return;
+  const C = window.innerWidth / 2, D = window.innerHeight / 2;
+  const w = LB.k * (LB.nw || 0), h = LB.k * (LB.nh || 0);
+  // 平移夹取：图至少留 80px 在画面内，别让人一不小心把图拖丢（ formerly 全黑屏）
+  const keep = Math.min(80, w, h);
+  const lox = keep - C - w / 2, hix = C + w / 2 - keep;
+  const loy = keep - D - h / 2, hiy = D + h / 2 - keep;
+  LB.tx = lox > hix ? 0 : Math.max(lox, Math.min(hix, LB.tx));
+  LB.ty = loy > hiy ? 0 : Math.max(loy, Math.min(hiy, LB.ty));
+  LB.img.style.transform = `translate(-50%,-50%) translate(${LB.tx}px,${LB.ty}px) scale(${LB.k})`;
+}
+/** 布局尺寸 = 原图真实像素（CSS 没加 max-width 约束），所以 offsetWidth 就是 nw。 */
+function lbDims(){
+  if(!LB) return { w: 0, h: 0 };
+  return { w: LB.nw || LB.img.offsetWidth || 0, h: LB.nh || LB.img.offsetHeight || 0 };
+}
+/** "整图刚好铺满屏幕"的比例；原图本来就比屏幕小 ⇒ 1（此时 1:1 起步，不能再缩小） */
+function lbFit(){
+  const d = lbDims();
+  if(!d.w || !d.h) return 1;
+  return Math.min(1, window.innerWidth / d.w, window.innerHeight / d.h);
+}
+/** 屏幕点 → 图内点 */
+function lbPt2(px, py){
+  return {
+    x: (LB.nw || 0) / 2 + (px - (window.innerWidth / 2 + LB.tx)) / LB.k,
+    y: (LB.nh || 0) / 2 + (py - (window.innerHeight / 2 + LB.ty)) / LB.k,
+  };
+}
+/** 把图内点 (vx,vy) 摆到屏幕 (px,py) 上（缩放 k 已就位时用它解 tx/ty） */
+function lbPut(vx, vy, px, py, k){
+  LB.k = k;
+  LB.tx = px - window.innerWidth / 2 - k * (vx - (LB.nw || 0) / 2);
+  LB.ty = py - window.innerHeight / 2 - k * (vy - (LB.nh || 0) / 2);
+}
+const lbClampK = k2 => Math.max(LB.fit, Math.min(LB_MAX, k2));
+/** 以屏幕点 (px,py) 为锚点缩放：缩放前后锚点下的那一个"图内点"保持不动 */
+function lbZoomAt(px, py, k2){
+  if(!LB) return;
+  // 缩到最小(=fit)时顺手把图摆回正中：否则"在边上滚轮缩回去"会留下一张歪在角落的图，
+  // 看着像没铺满屏幕。缩到最小就等于"回到整图居中"，符合直觉。
+  if(k2 <= LB.fit){ LB.k = LB.fit; LB.tx = 0; LB.ty = 0; lbPaint(); return; }
+  const v = lbPt2(px, py);
+  lbPut(v.x, v.y, px, py, lbClampK(k2));
+  lbPaint();
+}
+/** 双击：一刀切到 1:1（双击的那一点不动）；已经 1:1 了再双击就回到"整图铺满" */
+function lbOneToOne(px, py){
+  if(!LB) return;
+  const v = lbPt2(px, py);
+  const target = LB.k < 0.995 ? 1 : LB.fit;                 // < 1:1 ⇒ 去 1:1；已经是 ⇒ 回铺满
+  lbPut(v.x, v.y, px, py, target);
+  lbPaint();
+}
+
+function lbBind(){
+  const img = LB.img;
+  // 滚轮挂在整层上（而不是只在图上）：图很小/在画面外时，指针多半压在黑边上，
+  // 挂只在图上的话滚了半天没反应，体验上像"卡住了"。
+  LB.el.addEventListener('wheel', e => {
+    e.preventDefault();
+    const f = e.deltaY < 0 ? 1.14 : 1 / 1.14;
+    lbZoomAt(e.clientX, e.clientY, LB.k * f);
+  }, { passive: false });
+  LB.bg.addEventListener('click', () => lbClose());
+  img.addEventListener('dblclick', e => { e.preventDefault(); lbOneToOne(e.clientX, e.clientY); });
+  // 拖动平移（超过 4px 才算拖动，否则当成点击，别抢 dblclick）
+  let dragging = false, moved = 0, sx = 0, sy = 0;
+  img.addEventListener('pointerdown', e => {
+    dragging = true; moved = 0; sx = e.clientX; sy = e.clientY;
+    img.classList.add('drag');
+    try{ img.setPointerCapture(e.pointerId); }catch(err){}
+  });
+  img.addEventListener('pointermove', e => {
+    if(!dragging) return;
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    moved = Math.max(moved, Math.abs(dx) + Math.abs(dy));
+    if(moved > 4){ LB.tx += dx; LB.ty += dy; sx = e.clientX; sy = e.clientY; lbPaint(); }
+  });
+  const up = () => { dragging = false; img.classList.remove('drag'); };
+  img.addEventListener('pointerup', up);
+  img.addEventListener('pointercancel', up);
+  img.addEventListener('click', e => {
+    if(moved > 4) e.stopPropagation();        // 刚拖完别当成点背景
+  });
+}
+function lbDragOff(){ /* 占位：LB 已置 null，事件随 DOM 一起移除 */ }
+
+/* ═══════════ 下载（全局文件管理）═══════════
+   权限在服务端：/api/admin/files/{id}/raw 只放"管理员任意文件 / 普通用户自己名下"过。
+   这里只负责把一次或多次下载"触发"出来 —— 目录选不下（浏览器不支持），
+   所以只要有目录被选中，按钮就是灰的。 */
+function doDownload(ids){
+  if(!ids || !ids.length) return;
+  ids.forEach((id, i) => setTimeout(() => {
+    const bag = PIX.files || {};
+    const a = document.createElement('a');
+    a.href = `/api/admin/files/${encodeURIComponent(id)}/raw?dl=1`;
+    a.download = (bag[id] && bag[id].name) || id;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }, i * 180));
+  toast(LANG === 'zh' ? `开始下载 ${ids.length} 个文件…` : `Downloading ${ids.length} file(s)…`);
+}
+
+function newFolderDialog(){
+  openModal(`
+    <h3>${esc(t('fmNewFolder'))}</h3>
+    <div class="field">
+      <label>${esc(t('fmFolderName'))}</label>
+      <input type="text" id="nf-name" autocomplete="off" spellcheck="false">
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">
+      <button class="btn" id="nf-cancel">${esc(t('cancel'))}</button>
+      <button class="btn primary" id="nf-ok">${esc(t('fmCreate'))}</button>
+    </div>`);
+  const inp = $('#nf-name'); if(inp) inp.focus();
+  $('#nf-cancel').onclick = closeModal;
+  $('#nf-ok').onclick = async () => {
+    const name = ($('#nf-name').value || '').trim();
+    if(!name) return;
+    try{
+      await api('/api/admin/dirs', { method:'POST', body: JSON.stringify({ parent: FM.path, name }) });
+      closeModal();
+      toast(t('newFolderOk', { name }));
+      loadFiles(FM.path);
+    }catch(e){
+      toast(t('newFolderFail', { msg: e.message }), 'err');
+    }
+  };
+}
+
+/** 递归展开 DataTransfer 里的目录条目。
+ *  ⚠️ 拖进来的文件夹在 dataTransfer.files 里只有一个 size=0 的空壳（拿不到内容），
+ *     必须逐个 webkitGetAsEntry() 再 readEntries 才能遍历到真实文件。
+ *     这就是以前"拖文件夹上传 → 得到一堆 0 字节坏文件"的根因。 */
+async function filesFromDataTransfer(dt){
+  const out = [];
+  const items = dt && dt.items ? [...dt.items] : [];
+  const walk = async (entries, prefix) => {
+    for(const raw of entries){
+      const entry = typeof raw.webkitGetAsEntry === 'function' ? raw.webkitGetAsEntry() : raw;
+      if(!entry) continue;
+      if(entry.isFile){
+        const f = await new Promise(res => entry.file(res, () => res(null)));
+        if(f) out.push({ file: f, rel: prefix + f.name });
+      } else if(entry.isDirectory){
+        const reader = entry.createReader();
+        for(;;){
+          const batch = await new Promise(res => reader.readEntries(res, () => res([])));
+          if(!batch.length) break;               // readEntries 必须读到空数组才算这一层扫完
+          await walk(batch, prefix + entry.name + '/');
+        }
+      }
+    }
+  };
+  await walk(items, '');
+  return out;
+}
+
+/**
+ * 上传一批文件/目录。`input` 可以是 File 数组，也可以是 {file, rel} 数组
+ * （rel = 相对当前目录的路径，用于整目录上传时保留子目录结构）。
+ * 服务端会自动补齐 rel 里的中间目录（见 filestore.ts 的 ensureDirChain）。
+ */
+async function uploadFiles(input, baseDir){
+  const base = baseDir || FM.path || '/';
+  const listHost = $('#fm-upload-list');
+  const pairs = (Array.isArray(input) ? input : [input])
+    .map(f => (f && f.file) ? f : { file: f, rel: (f && f.name) || '' });
+  if(!pairs.length) return;
+  let needReload = false;
+  for(const { file, rel } of pairs){
+    if(!file) continue;
+    const name = file.name;
+    if(file.size > 100 * 1024 * 1024){ toast(t('tooLarge', {name}), 'err'); continue; }
+    // 目录上传：目标目录 = 当前目录 + rel 的父路径，文件名只取最后一段
+    const sub = String(rel).split('/').slice(0, -1).join('/');
+    const dir = sub ? (base.replace(/\/+$/,'') + '/' + sub) : base;
+    const shown = rel || name;
     const item = document.createElement('div');
     item.className = 'upload-item glass';
-    item.innerHTML = `${ficon(file.name)}<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(file.name)}</span>
-      <div class="prog"><i></i></div><span class="pct">0%</span>`;
-    $('#upload-list').prepend(item);
+    item.innerHTML = `${ficon(name)}<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(shown)}">${esc(shown)}</span>
+      <div class="prog"><i></i></div><span class="pct">…</span>`;
+    if(listHost) listHost.prepend(item);
+
+    // 先探测元数据（图片宽高 / 视频时长·分辨率·帧率·分轨码率）再上传。
+    // 探测失败一律不影响上传 —— 元数据只是锦上添花。
+    let metaHeader = '';
+    try{ metaHeader = b64Json(await probeFile(file)); }catch(e){ metaHeader = ''; }
+
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/admin/upload');
     xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
+    xhr.setRequestHeader('X-File-Path', encodeURIComponent(dir));
+    if(metaHeader) xhr.setRequestHeader('X-File-Meta', metaHeader);
     xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
     xhr.upload.onprogress = e => {
+      if(!e.lengthComputable) return;
       const pct = Math.round(e.loaded / e.total * 100);
-      item.querySelector('.prog i').style.width = pct + '%';
-      item.querySelector('.pct').textContent = pct + '%';
+      const bar = item.querySelector('.prog i'), tx = item.querySelector('.pct');
+      if(bar) bar.style.width = pct + '%';
+      if(tx) tx.textContent = pct + '%';
     };
     xhr.onload = () => {
-      if(xhr.status === 201){ item.querySelector('.pct').textContent = t('uploadDone'); toast(t('uploadOk', {name: file.name})); loadFiles(); }
-      else { item.querySelector('.pct').textContent = t('uploadFailShort'); toast(t('uploadFail', {name: file.name}), 'err'); }
+      const tx = item.querySelector('.pct');
+      if(xhr.status === 201){
+        if(tx) tx.textContent = t('uploadDone');
+        toast(t('uploadOk', {name: file.name}));
+        // 刚传上去的大图先裁一张小图存好，以后浏览这个目录直接读小图（否则第一次浏览照样整张下载+解码）
+        try{ genThumbOnUpload(JSON.parse(xhr.responseText || '{}').id, file); }catch(e){}
+        // 注意：整目录上传会落到 base/<子目录>，所以刷新只在"仍停在 base"时进行
+        if(FM.path === base) needReload = true;
+      } else {
+        if(tx) tx.textContent = t('uploadFailShort');
+        toast(t('uploadFail', {name: file.name}), 'err');
+      }
     };
-    xhr.onerror = () => { item.querySelector('.pct').textContent = t('uploadFailShort'); toast(t('uploadFail', {name: file.name}), 'err'); };
+    xhr.onerror = () => {
+      const tx = item.querySelector('.pct');
+      if(tx) tx.textContent = t('uploadFailShort');
+      toast(t('uploadFail', {name: file.name}), 'err');
+    };
     xhr.send(file);
   }
+  // 整目录下传完**只刷一次**，别每个文件刷一遍
+  if(needReload) loadFiles(base);
+}
+
+/* ═══════════ 回收站 ═══════════
+   服务端只对**文件**做软删除（见 src/filestore.ts 的模型说明）：
+   删目录 = 递归软删其下所有文件 + 移除目录结构行，所以这里列出来的都是文件。
+   可见性由服务端按身份过滤：管理员看全部，普通用户只看自己删的。 */
+async function loadTrash(){
+  const d = await api('/api/admin/trash');
+  const items = sortRows('trash', d.items || []);   // ⚠️ 必须在渲染前排，否则表头箭头和行序对不上
+  pixIndex('trash', d.items || []);                 // 回收站里也要能点开看大图
+  $('#view').innerHTML = `
+  <div class="glass section">
+    <div class="section-title">
+      <h2>🗑️ ${esc(t('trashTitle'))}（${items.length}）</h2>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:12.5px;color:var(--text-3)">${esc(t('trashHint'))}</span>
+        ${items.length ? `<button class="btn sm danger" id="trash-empty">${esc(t('emptyTrash'))}</button>` : ''}
+      </div>
+    </div>
+    ${items.length ? `
+    <div style="overflow-x:auto"><table class="tbl">
+      <thead><tr>
+        ${sortTh('trash','name',t('colName'),'')}
+        ${sortTh('trash','origin',t('colOrigin'),'')}
+        ${sortTh('trash','size',t('colSize'),'')}
+        ${sortTh('trash','by',t('colDeletedBy'),'')}
+        ${sortTh('trash','at',t('colDeletedAt'),'')}
+        ${sortTh('trash','left',t('colDaysLeft'),'')}
+        <th style="width:150px">${esc(t('colActions'))}</th>
+      </tr></thead>
+      <tbody>${items.map(it => `
+        <tr data-fid="${esc(it.id)}">
+          <td class="name-cell" title="${esc(it.name)}">${ficon(it.name)} ${esc(it.name)}</td>
+          <td class="mono">${esc(it.original_path || '/')}</td>
+          <td class="num">${fmtSize(it.size)}</td>
+          <td>${esc(it.deleted_by || '—')}</td>
+          <td class="num">${fmtTime(it.deleted_at)}</td>
+          <td class="num">${it.days_left != null ? esc(t('daysLeftN', { n: it.days_left })) : '—'}</td>
+          <td><div class="actions-cell">
+            <button class="btn sm" data-restore="${it.id}">${esc(t('restore'))}</button>
+            <button class="btn sm danger" data-purge="${it.id}" data-name="${esc(it.name)}">${esc(t('purge'))}</button>
+          </div></td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>` : `<div class="empty"><div class="icon">🗑️</div>${esc(t('noTrash'))}</div>`}
+  </div>`;
+
+  const emptyBtn = $('#trash-empty');
+  if(emptyBtn) emptyBtn.onclick = async () => {
+    if(!(await confirmDialog(t('confirmEmptyTrashT'), t('confirmEmptyTrashD')))) return;
+    const r = await api('/api/admin/trash?all=1', { method:'DELETE' });
+    toast(t('purgedN', { n: r.purged || 0 }));
+    loadTrash();
+  };
+  $$('[data-restore]').forEach(b => b.onclick = async () => {
+    const r = await api('/api/admin/trash/restore', { method:'POST', body: JSON.stringify({ ids: [b.dataset.restore] }) });
+    toast(t('restoredN', { n: r.restored || 0 }));
+    loadTrash();
+  });
+  // 回收站里的「彻底删除」：回收站条目本来就在等着被抹掉，没有"再软删一次"这一步，
+  // 所以直接二次确认 + 冷静期（不需要 deleteDialog 那个"移入回收站"的选项）。
+  $$('[data-purge]').forEach(b => b.onclick = async () => {
+    if(!(await confirmDialog(t('confirmPurgeT'), t('confirmPurgeD', { name: b.dataset.name })))) return;
+    if(!(await purgeDialog(1))) return;
+    try{
+      const r = await api('/api/admin/trash', { method: 'DELETE', body: JSON.stringify({ ids: [b.dataset.purge] }) });
+      toast(t('purgedN', { n: r.purged || 0 }));
+      loadTrash();
+    }catch(e){ toast(e.message, 'err'); loadTrash(); }
+  });
 }
 
 /* ═══════════ 创建分享弹窗 ═══════════ */
@@ -2073,10 +4517,11 @@ async function loadStorage(){
         return `<a href="javascript:void(0)" data-prefix="${esc(part.prefix)}" class="stg-bc" style="color:var(--blue);text-decoration:none;font-family:ui-monospace,monospace">${label}</a>`;
       }).join('<span style="opacity:.35;margin:0 6px">/</span>');
 
-      const rows = [...(r.entries ?? [])].sort((a,b)=>{
-        if(a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-        return a.name.localeCompare(b.name);
-      });
+      // 目录永远在最前（和"文件"页一致），其余按当前排序状态；
+      // ⚠️ 只排本地已加载的这一页，分页加载更多后仍是"当前这页内部排序"。
+      const allRows = [...(r.entries ?? [])];
+      const rows = sortRows('storage', allRows.filter(x => x.isDir))
+        .concat(sortRows('storage', allRows.filter(x => !x.isDir)));
 
       let html2 = `
         <div class="glass group" style="padding:18px 22px">
@@ -2088,9 +4533,11 @@ async function loadStorage(){
                 <span style="opacity:.35">·</span>
                 ${bcHtml}
               </div>
+              <div style="font-size:12px;opacity:.45;margin-top:7px;line-height:1.6;max-width:760px">${esc(t('stgNote'))}</div>
             </div>
             <div style="display:flex;gap:8px">
               <button class="btn sm" id="stg-refresh">🔄 ${isZh?'刷新':'Refresh'}</button>
+              <button class="btn sm ok" id="stg-dl-sel" disabled>${isZh ? '⬇ 下载选中' : '⬇ Download'}</button>
               <button class="btn sm danger" id="stg-delete-sel">🗑️ ${isZh ? '删除选中' : 'Delete Selected'}</button>
             </div>
           </div>
@@ -2099,39 +4546,71 @@ async function loadStorage(){
           <table class="tbl" style="margin:0">
             <thead><tr>
               <th style="width:36px"><input type="checkbox" id="stg-check-all"></th>
-              <th>${esc(t('colName'))}</th>
-              <th style="width:120px">${esc(t('colSize'))}</th>
-              <th style="width:170px">${esc(t('colTime'))}</th>
-              <th style="width:140px">${esc(t('colActions'))}</th>
+              ${sortTh('storage','name',t('colName'),'')}
+              ${sortTh('storage','size',t('colSize'),'120px')}
+              ${sortTh('storage','time',t('stgUploadTime'),'170px')}
+              ${sortTh('storage','owner',t('stgUploader'),'110px')}
+              ${sortTh('storage','loc',t('stgLocation'),'200px')}
+              <th style="width:150px">${esc(t('colActions'))}</th>
             </tr></thead>
             <tbody id="stg-tbody">
       `;
       if (rows.length === 0){
-        html2 += `<tr><td colspan="5" style="text-align:center;padding:48px;opacity:.6">${isZh ? '此目录为空' : 'This directory is empty'}</td></tr>`;
+        html2 += `<tr><td colspan="7" style="text-align:center;padding:48px;opacity:.6">${isZh ? '此目录为空' : 'This directory is empty'}</td></tr>`;
       } else {
+        const recList = [];   // 有数据库记录的那些对象 ⇒ 可预览 / 可下载
         html2 += rows.map(e => {
           const rowKey = esc(e.key);
           if (e.isDir){
-            return `<tr data-key="${rowKey}">
+            return e.__html = `<tr data-key="${rowKey}">
               <td></td>
               <td><a href="javascript:void(0)" class="stg-dir" data-prefix="${esc(e.key)}" style="text-decoration:none;color:inherit;display:inline-flex;align-items:center;gap:8px">📁 <strong>${esc(e.name.replace(/\/$/, ''))}</strong></a></td>
+              <td style="opacity:.35">—</td>
+              <td style="opacity:.35">—</td>
               <td style="opacity:.35">—</td>
               <td style="opacity:.35">—</td>
               <td></td>
             </tr>`;
           }
-          const icon = ficon(e.name);
-          return `<tr data-key="${rowKey}">
+          // ⚠️ 旧版这里直接显示 R2 对象 key（一串乱码），和"文件"页对不上。
+          //    现在有数据库记录的就显示真实文件名（下面灰字仍可看到原始 key），
+          //    没有记录的孤儿对象才回退成 key —— 这样两个页签看到的都是同一个名字。
+          const rec = e.record || null;
+          if(rec) recList.push(rec);
+          const shownName = rec ? rec.name : e.name;
+          const keyTail = e.name;
+          const icon = ficon(shownName);
+          const time = rec && rec.uploaded_at ? rec.uploaded_at : e.lastModified;
+          const loc = rec ? rec.path : '';
+          return e.__html = `<tr data-key="${rowKey}" data-fid="${esc(rec ? rec.id : '')}">
             <td><input type="checkbox" class="stg-chk"></td>
-            <td style="display:flex;align-items:center;gap:10px">${icon}<span style="font-family:ui-monospace,monospace">${esc(e.name)}</span></td>
+            <td>
+              <div style="display:flex;align-items:center;gap:8px;min-width:0">${icon}<span class="stg-nm" title="${esc(shownName)}">${esc(shownName)}</span></div>
+              <div class="stg-key" title="${esc(e.key)}">${esc(keyTail)}</div>
+            </td>
             <td class="num">${fmtSize(e.size)}</td>
-            <td class="num" style="white-space:nowrap">${e.lastModified ? fmtTime(e.lastModified) : '—'}</td>
+            <td class="num" style="white-space:nowrap">${time ? fmtTime(time) : '—'}${rec && rec.in_trash ? ` <span style="color:#fda293">${esc(t('inTrashShort'))}</span>` : ''}</td>
+            <td class="stg-owner" title="${esc(rec ? rec.owner : '')}">${esc(rec ? rec.owner : '—')}</td>
+            <td class="mono stg-loc" title="${esc(loc)}">${loc ? esc(loc) : '—'}</td>
             <td style="white-space:nowrap">
-              <button class="btn sm" data-copy-key="${rowKey}">${isZh ? '复制Key' : 'Copy Key'}</button>
+              <button class="btn sm" data-goto="${esc(rec ? rec.id : '')}" data-dir="${esc(loc || '')}" data-trash="${rec && rec.in_trash ? '1' : ''}" title="${esc(t('stgGoto'))}" ${rec ? '' : 'disabled style="opacity:.4"'}>📍</button>
+              <button class="btn sm" data-copy-key="${rowKey}" title="${esc(t('stgCopyKey'))}">📋</button>
             </td>
           </tr>`;
         }).join('');
+        pixIndex('storage', recList);
       }
+      // 登记"点表头怎么重排"：把这一页各行已经拼好的 html 存下来，
+      // 点排序表头时只重排 innerHTML，不重新请求接口、也不闪一下 spinner。
+      SORT_ROWS.storage = rows;
+      SORT_RERENDER.storage = () => {
+        const tb = document.getElementById('stg-tbody');
+        if(!tb || !rows.length) return;
+        tb.innerHTML = sortRows('storage', rows.filter(x => x.isDir))
+          .concat(sortRows('storage', rows.filter(x => !x.isDir)))
+          .map(x => x.__html || '').join('');
+      };
+
       html2 += `</tbody></table>
         </div>
         ${r.truncated ? `<div style="text-align:center;padding:14px"><button class="btn" id="stg-load-more">${isZh ? '加载更多…' : 'Load more…'}</button></div>` : ''}
@@ -2163,12 +4642,31 @@ async function loadStorage(){
         b.addEventListener('click', () => copyText(b.dataset.copyKey));
       });
 
+      document.querySelectorAll('[data-goto]').forEach(b => {
+        b.addEventListener('click', () => gotoFileRecord(
+          b.dataset.goto || '', b.dataset.dir || '', b.dataset.trash === '1'
+        ));
+      });
+
       const checkAll = document.getElementById('stg-check-all');
+      const dlSel = document.getElementById('stg-dl-sel');
+      // 存储浏览只能勾选到文件行（目录行的复选框列是空的）⇒ "有勾选 = 能下载"
+      const syncStgDl = () => {
+        const n = document.querySelectorAll('.stg-chk:checked').length;
+        if(dlSel) dlSel.disabled = n === 0;
+      };
       if (checkAll){
         checkAll.addEventListener('change', () => {
           document.querySelectorAll('.stg-chk').forEach(c => c.checked = checkAll.checked);
+          syncStgDl();
         });
       }
+      document.querySelectorAll('.stg-chk').forEach(c => c.addEventListener('change', syncStgDl));
+      dlSel?.addEventListener('click', () => {
+        const ids = [...document.querySelectorAll('.stg-chk:checked')]
+          .map(c => c.closest('tr')?.dataset.fid).filter(Boolean);
+        doDownload(ids);
+      });
 
       document.getElementById('stg-delete-sel')?.addEventListener('click', async () => {
         const keys = [...document.querySelectorAll('.stg-chk:checked')].map(c => c.closest('tr')?.dataset.key).filter(Boolean);
@@ -2194,6 +4692,45 @@ async function loadStorage(){
     }
   }
   render();
+}
+
+/* ═══════════ 存储浏览 → 文件页「定位」 ═══════════
+   点一下 📍：切到「文件」页 → 进到该文件所在目录 → 滚动到它并高亮 5 秒。
+   高亮用临时 class（.hl-tmp），5 秒后自动摘掉，不会污染其它渲染。 */
+async function gotoFileRecord(fileId, dir, inTrash){
+  const zh = LANG === 'zh';
+  const hl = (selector, label) => {
+    const el = document.querySelector(selector);
+    if(!el){
+      toast(zh ? '未找到该条目（可能已被删除）' : 'Item not found (maybe deleted)', 'err');
+      return;
+    }
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    el.classList.remove('hl-tmp');
+    void el.offsetWidth;              // 强制回流，保证同一次点击能重复触发动画
+    el.classList.add('hl-tmp');
+    setTimeout(() => el.classList.remove('hl-tmp'), 5000);
+    if(label) toast(zh ? `已定位到「${label}」` : `Jumped to "${label}"`);
+  };
+
+  if(!fileId){
+    toast(zh ? '该对象没有数据库记录（孤儿对象），无法定位' : 'No DB record for this object', 'err');
+    return;
+  }
+  if(inTrash){
+    switchTab('trash', { skipLoad:true });
+    await loadTrash();
+    hl(`#view [data-fid="${fileId}"]`);
+    return;
+  }
+  // 详细信息模式才有稳定的表格行（缩略图是卡片，定位同样能滚过去，但行更好认）
+  FM.view = 'details';
+  switchTab('files', { skipLoad:true });
+  // ⚠️ 顺序：先把目标目录写进 FM.path，再加载。switchTab 那次隐式加载会带着
+  //    旧路径跑一遍，谁后返回谁覆盖 FM.path —— 不这么写线上会被打回根目录。
+  FM.path = dir || FM.start || '/';
+  await loadFiles(FM.path);
+  hl(`#fm-list [data-fid="${fileId}"]`);
 }
 
 /* ═══════════ 分享 ═══════════ */
@@ -2453,8 +4990,12 @@ async function loadSecurity(){
         <tbody>${d.logs.map(l => {
           const actText = actionMap[l.action] || l.action;
           const reasonText = l.reason ? (reasonMap[l.reason] || l.reason) : '—';
+          // 颜色规则：失败（登录失败 / 登出失败 / 限流）一律红；
+          //          成功登录 绿、成功登出 黄。其余配色不动。
+          const actOk = l.result === 'success';
+          const actCls = actOk ? (l.action === 'logout' ? 'warn' : 'active') : 'revoked';
           return `<tr>
-            <td><span class="tag ${l.result === 'success' ? 'active' : 'revoked'}"><i></i>${esc(actText)}</span></td>
+            <td><span class="tag ${actCls}"><i></i>${esc(actText)}</span></td>
             <td class="mono">${esc(l.ip)}</td>
             <td>${esc(l.country || '—')}</td>
             <td>${esc(l.browser)}</td>
@@ -3111,6 +5652,7 @@ async function loadSettings(){
     api('/api/admin/db/status').catch(() => null),
   ]);
   $('#view').innerHTML = `
+    <div class="auto-cols">
     <div class="glass group">
       <div class="row">
         <div class="info"><div class="t">${esc(t('siteName'))}</div><div class="d">${esc(t('siteNameD'))}</div></div>
@@ -3122,6 +5664,11 @@ async function loadSettings(){
         <div class="info"><div class="t">📡 ${esc(t('trafficLimit'))}</div>
         <div class="d">${esc(t('trafficLimitD',{used:fmtSize(s.traffic_used_bytes)}))}</div></div>
         <input type="number" id="st-limit" min="0" step="0.1" value="${s.traffic_limit_gb}">
+      </div>
+      <div class="row">
+        <div class="info"><div class="t">🗄️ ${esc(t('storageCap'))}</div>
+          <div class="d">${esc(t('storageCapD',{free:fmtSize(s.cf_free_bytes||0)}))}</div></div>
+        <input type="number" id="st-cap" min="1" max="9.9" step="0.1" value="${(s.storage_cap_gb||0).toFixed(2)}">
       </div>
       <div class="row">
         <div class="info"><div class="t">♻️ ${esc(t('resetTraffic'))}</div><div class="d">${esc(t('resetTrafficD'))}</div></div>
@@ -3356,6 +5903,7 @@ async function loadSettings(){
         <button class="btn sm ${dbStatus && dbStatus.healthy ? '' : 'primary'}" id="db-repair">${esc(t('dbRepairBtn'))}</button>
       </div>
     </div>
+    </div><!-- /auto-cols（设置卡片自动分列，保存按钮留在列外、独占整行）-->
     <button class="btn primary" id="st-save" style="padding:14px 28px;font-size:15px;border-radius:18px">${esc(t('save'))}</button>`;
 
   // ── 数据库工具按钮 ──
@@ -3410,6 +5958,7 @@ async function loadSettings(){
     const body = {
       site_title: $('#st-title').value.trim(),
       traffic_limit_gb: Number($('#st-limit').value) || 0,
+      storage_cap_gb: Number($('#st-cap').value) || 0,
       max_downloads_per_ip: Number($('#st-perip').value) || 0,
       count_window_hours: Number($('#st-window').value) || 0,
       auto_ban: $('#st-autoban').checked,
@@ -3474,7 +6023,7 @@ async function loadSettings(){
       if (!url || !user) { result.textContent = LANG==='zh' ? '请填写 URL 和用户名' : 'URL and username required'; result.style.color = '#fda293'; return; }
       result.textContent = '…'; result.style.color = 'var(--text-3)';
       try {
-        const payload: any = { provider: 'webdav', url, username: user };
+        const payload = { provider: 'webdav', url, username: user };
         if (pwd) payload.password = pwd;
         const r = await api('/api/admin/storage/test', { method: 'POST', body: JSON.stringify(payload) });
         if (r.ok) {
@@ -3484,7 +6033,7 @@ async function loadSettings(){
           result.textContent = `✗ ${esc(t('storageBackendConnectFail'))}: ${r.message || r.error || ''}`;
           result.style.color = '#fda293';
         }
-      } catch (e: any) {
+      } catch (e) {
         result.textContent = `✗ ${esc(t('storageBackendConnectFail'))}: ${e?.message ?? ''}`;
         result.style.color = '#fda293';
       }
@@ -3494,7 +6043,7 @@ async function loadSettings(){
       const url = $('#wd-url').value.trim().replace(/\/+$/, '');
       const user = $('#wd-user').value.trim();
       const pwdVal = $('#wd-pwd').value.trim();
-      const body: any = {
+      const body = {
         storage_provider: 'webdav',
         storage_webdav_url: url,
         storage_webdav_username: user,
@@ -3703,6 +6252,32 @@ async function loadSettings(){
     });
   }
 
+  // ═══ OAuth2 总开关：必须"拨动即保存" ═══
+  // 原来这个 checkbox 没有绑定任何事件，只有点页面底部「保存设置」才会被读到并提交。
+  // 用户拨开关 → 没进库 → 刷新页面 → 自己弹回去，看起来像 bug。
+  // 这里改成即时 PUT，并在失败时**回滚 UI**（否则会出现"看着是开的、其实没开"的假象）。
+  $('#oauth-enabled')?.addEventListener('change', async (e) => {
+    const tgl = e.currentTarget;
+    const want = tgl.checked;
+    tgl.disabled = true;
+    try {
+      await api('/api/admin/settings', { method:'PUT', body: JSON.stringify({ oauth_enabled: want }) });
+      const enabledN = document.querySelectorAll('#oauth-providers-grid .tag.active').length;
+      if (want && !enabledN) {
+        // 开关开了但一个 Provider 都没启用 —— 登录页仍然不会出现按钮，必须明确提示
+        toast(t('oauthNoEnabled'), 'err');
+      } else {
+        toast(want ? t('oauthEnabledN', { n: enabledN }) : t('oauthDisabled'));
+      }
+      loadSettings();   // 用服务端的真实值重绘，开关与状态行保持一致
+    } catch (err) {
+      tgl.checked = !want;   // 保存失败 → 回滚，绝不让 UI 与真实状态不一致
+      toast(String(err.message || err), 'err');
+    } finally {
+      tgl.disabled = false;
+    }
+  });
+
   // 添加 Provider
   $('#oauth-add')?.addEventListener('click', () => openOauthProviderModal(null));
 
@@ -3839,8 +6414,8 @@ function showRecoveryCodes(codes){
     siteTitle = s.site_title || siteTitle;
     showApp();
   }catch{
-    // api() 内部已对 401 调用 showLogin() 并 throw，这里静默兜底即可
-    // 若 api() 因其他错误 throw，也不渲染空页面
+    // 401 已在 api() 里重定向到 /login（带 GitHub 登录按钮的完整登录页）；
+    // 走到这里的是其他错误 —— 也别渲染空页面，至少给个内置登录卡片兜底。
     if (!document.querySelector('#login-view')) showLogin();
   }
 })();

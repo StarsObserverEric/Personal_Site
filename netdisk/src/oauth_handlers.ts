@@ -14,6 +14,7 @@
 import type { Env } from "./types";
 import { getSettings } from "./settings";
 import { decryptSecret } from "./crypto";
+import { createSession } from "./auth";
 import {
   getBuiltinProvider,
   BUILTIN_PROVIDERS,
@@ -78,6 +79,54 @@ async function listEnabledProviders(env: Env): Promise<OAuthProviderRow[]> {
   return rows.results;
 }
 
+/* ═══════════ 登录页的 OAuth 按钮（服务端直出）═══════════
+ * 为什么在服务端渲染：登录页原本靠前端 fetch /oauth/providers 才有 GitHub 按钮，
+ * 一旦那次 fetch 失败（网络抖动 / 插件拦同源请求 / 极端时序）按钮就"凭空消失"，
+ * 用户完全没法用 GitHub 登录。改成服务端直出后，登录页 HTML 里就一定带着按钮。
+ * 前端脚本仍保留一份（老版本页面 / 缓存页面也能工作），但发现容器里已有按钮就跳过。
+ */
+function escapeHtml(s: string): string {
+  return String(s).replace(/[&<>"']/g, (c: string) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" } as Record<string, string>)[c]!
+  );
+}
+
+function providerIcon(type: string): string {
+  if (type !== "github") return "";
+  return '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>';
+}
+
+export interface LoginOAuthButtons {
+  html: string;
+  count: number;
+}
+
+export async function renderLoginOAuthButtons(env: Env): Promise<LoginOAuthButtons> {
+  const empty: LoginOAuthButtons = { html: "", count: 0 };
+  let settings;
+  try {
+    settings = await getSettings(env);
+  } catch {
+    return empty;
+  }
+  if (!settings.oauthEnabled) return empty;
+  let rows: OAuthProviderRow[] = [];
+  try {
+    rows = await listEnabledProviders(env);
+  } catch {
+    return empty;
+  }
+  const buttons = rows
+    .filter((r) => r.client_id)
+    .map((r) => {
+      const p = rowToProvider(r);
+      const label = r.label || p?.name || r.provider_type;
+      const href = `/oauth/start?provider=${encodeURIComponent(r.id)}&redirect=${encodeURIComponent("/login")}`;
+      return `<a class="oauth-btn" href="${escapeHtml(href)}">${providerIcon(r.provider_type)}<span>${escapeHtml("使用 " + label + " 登录")}</span></a>`;
+    });
+  return { html: buttons.join(""), count: buttons.length };
+}
+
 /* ═══════════ GET /oauth/providers —— 分享页用 ═══════════
  * 返回启用中的 Provider 列表（不含敏感信息，只够渲染按钮）。
  * 如果 settings.oauth_enabled=false 则返回空数组。
@@ -103,11 +152,20 @@ export async function handleOAuthProviders(req: Request, env: Env): Promise<Resp
   return Response.json({ providers, enabled: providers.length > 0 });
 }
 
+/**
+ * 把外部传入的 redirect 参数收敛为站内相对路径，防开放重定向。
+ * 仅允许以单斜杠开头、且不是协议相对(//)或反斜杠(/\\)开头的串；否则回退 "/"。
+ */
+function sanitizeLocalRedirect(v: string): string {
+  if (v.startsWith("/") && !v.startsWith("//") && !v.startsWith("/\\")) return v;
+  return "/";
+}
+
 /* ═══════════ GET /oauth/start?provider=<provider_id>&redirect=<path> ═══════════ */
 export async function handleOAuthStart(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
   const providerDbId = url.searchParams.get("provider") || "";
-  const redirectTo = url.searchParams.get("redirect") || "/";
+  const redirectTo = sanitizeLocalRedirect(url.searchParams.get("redirect") || "/");
 
   const settings = await getSettings(env);
   if (!settings.oauthEnabled) {
@@ -213,9 +271,20 @@ export async function handleOAuthCallback(req: Request, env: Env): Promise<Respo
     return redirectBackWithMsg(req, "oauth_userinfo_failed");
   }
 
-  // 5. 发 OAuth 会话 Cookie
-  // cookie 里存的是 db id，方便 later check 时知道用的是哪个 provider
+  // 4.5 ⛔ 账号白名单 —— 只有名单内的账号可以登录，其他一律踢回登录页。
+  //     未配置 oauth_allowed_users 时视为"谁都不许"（fail closed），
+  //     避免"忘了配白名单 → 任何人都能登进来"这种最危险的默认值。
+  if (!isUserAllowed(env, user)) {
+    return redirectBackWithMsg(req, "oauth_account_not_allowed");
+  }
+
+  // 5. 发会话 Cookie
+  //    除 OAuth 下载会话（cd_oauth，1 小时，供分享页下载）外，
+  //    白名单账号**同时签发管理员会话**（cd_admin，7 天）
+  //    ⇒ GitHub 登录 = 管理员本人，权限完全等同于密码登录。
+  //    这里必须用 SameSite=Lax：回调来自 GitHub 的跨站重定向。
   const { cookie, secure } = await signOAuthSession(env, providerDbId, user.id);
+  const adminCookie = await createSession(env, url.protocol === "https:", "Lax");
   const originalRedirect = parseCookie(req.headers.get("cookie"), "cd_oauth_redirect") || "/";
 
   const setCookieParts: string[] = [cookie, "Path=/", "HttpOnly", "SameSite=Lax", "Max-Age=3600"];
@@ -227,9 +296,34 @@ export async function handleOAuthCallback(req: Request, env: Env): Promise<Respo
     status: 302,
     headers: {
       location: originalRedirect,
-      "set-cookie": [setCookie, clearRedirect].join(", "),
+      // 注意：join(", ") 拼多个 Cookie 在这里是安全的 —— 上面所有 Cookie 都用
+      // Max-Age 而非 Expires，值里不会出现逗号。
+      "set-cookie": [setCookie, adminCookie, clearRedirect].join(", "),
     },
   });
+}
+
+/**
+ * OAuth 账号白名单判定。
+ *   - `oauth_allowed_users` 按逗号/空格拆分；
+ *   - 条目**不含 `@`** → 与账号名（GitHub login）大小写不敏感比对；
+ *   - 条目**含 `@`**   → 与邮箱大小写不敏感比对；
+ *   - 名单为空 → 一律拒绝（fail closed）。
+ */
+function isUserAllowed(
+  env: Env,
+  user: { handle?: string; email?: string }
+): boolean {
+  const entries = (env.oauth_allowed_users ?? "")
+    .split(/[,\s]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  if (entries.length === 0) return false;
+  const handle = (user.handle ?? "").trim().toLowerCase();
+  const email = (user.email ?? "").trim().toLowerCase();
+  return entries.some((entry) =>
+    entry.includes("@") ? entry === email : entry === handle
+  );
 }
 
 /* ═══════════ GET /oauth/session ═══════════ */

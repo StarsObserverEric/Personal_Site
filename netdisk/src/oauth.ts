@@ -201,6 +201,8 @@ export interface OAuthUser {
   name: string;
   avatar: string | null;
   provider: string;
+  /** Provider 上的账号名（GitHub 的 `login`、Google 的 `preferred_username`…），白名单比对用它 */
+  handle: string;
 }
 
 export async function fetchUserInfo(
@@ -227,10 +229,16 @@ export async function fetchUserInfo(
     let name = String(json.name ?? json.login ?? json.preferred_username ?? (email || id));
     // Microsoft Graph: displayName
     if (!name && (json.displayName as string)) name = String(json.displayName);
+    // 账号名 handle：GitHub 是 login，其他 provider 可能是 preferred_username / username。
+    // ⚠️ 白名单必须比对 handle，不能比对 name —— GitHub 的 name 是"显示名"（用户可随时改），
+    //    login 才是唯一且不可冒充的账号标识。
+    const handle = String(
+      json.login ?? json.preferred_username ?? json.username ?? json.nickname ?? ""
+    ).trim();
     const avatar =
       (json.avatar_url as string) || (json.picture as string) || null;
     if (!id) return null;
-    return { id, email, name, avatar, provider: provider.id };
+    return { id, email, name, avatar, provider: provider.id, handle };
   } catch {
     return null;
   }

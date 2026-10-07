@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>登录 · cloud-r2pan</title>
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="https://starsobservereric.cc.cd/apple-touch-icon.png">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+               "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  padding: 24px; color: #fff; position: relative; overflow-x: hidden;
+  background: linear-gradient(160deg, #0b1026 0%, #1a1240 45%, #2a1045 100%);
+}
+.orb { position: fixed; border-radius: 50%; filter: blur(90px); opacity: .5; pointer-events: none; animation: drift 18s ease-in-out infinite alternate; }
+.o1 { width: 46vmax; height: 46vmax; background: #38bdf8; top: -18%; left: -14%; }
+.o2 { width: 40vmax; height: 40vmax; background: #8b5cf6; bottom: -20%; right: -10%; animation-delay: -6s; }
+.o3 { width: 30vmax; height: 30vmax; background: #ec4899; top: 55%; left: 8%; animation-delay: -12s; opacity: .35; }
+@keyframes drift { from { transform: translate(0,0) scale(1); } to { transform: translate(6vw,-5vh) scale(1.12); } }
+.card {
+  position: relative; width: 100%; max-width: 400px; text-align: center;
+  padding: 46px 34px 34px; border-radius: 32px;
+  background: linear-gradient(145deg, rgba(255,255,255,.16), rgba(255,255,255,.05));
+  backdrop-filter: blur(32px) saturate(180%); -webkit-backdrop-filter: blur(32px) saturate(180%);
+  border: 1px solid rgba(255,255,255,.28);
+  box-shadow: 0 24px 60px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.35);
+  animation: rise .6s cubic-bezier(.22,1.2,.36,1) both;
+}
+@keyframes rise { from { opacity: 0; transform: translateY(24px) scale(.96); } to { opacity: 1; transform: none; } }
+.logo {
+  width: 74px; height: 74px; margin: 0 auto 20px; border-radius: 24px; display: flex;
+  align-items: center; justify-content: center;
+  background: linear-gradient(145deg, rgba(255,255,255,.25), rgba(255,255,255,.08));
+  border: 1px solid rgba(255,255,255,.3);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.4), 0 10px 26px rgba(0,0,0,.3);
+}
+.logo svg { width: 40px; height: 40px; }
+h1 { font-size: 23px; font-weight: 750; letter-spacing: -.03em; }
+.sub { margin: 8px 0 24px; font-size: 13.5px; color: rgba(255,255,255,.7); line-height: 1.6; }
+input {
+  width: 100%; padding: 15px 18px; margin-bottom: 12px; border-radius: 18px;
+  font-size: 16px; font-family: inherit; color: #fff; outline: none;
+  background: rgba(255,255,255,.10); border: 1px solid rgba(255,255,255,.2);
+  transition: border-color .18s, background .18s;
+}
+input::placeholder { color: rgba(255,255,255,.5); }
+input:focus { border-color: rgba(10,132,255,.75); background: rgba(255,255,255,.15); }
+.btn {
+  width: 100%; padding: 15px; margin-top: 2px; font-size: 16px; font-weight: 650;
+  font-family: inherit; color: #fff; cursor: pointer; border: 0; border-radius: 18px;
+  background: linear-gradient(180deg, #3d9bff, #0a7cff);
+  box-shadow: 0 12px 28px rgba(10,124,255,.4);
+  transition: transform .15s, opacity .15s;
+}
+.btn:hover { transform: translateY(-1px); }
+.btn:disabled { opacity: .55; cursor: default; transform: none; }
+.err { margin-top: 12px; font-size: 13px; color: #fda293; min-height: 18px; line-height: 1.5; }
+.sep { display: flex; align-items: center; gap: 12px; margin: 22px 0 16px; color: rgba(255,255,255,.45); font-size: 12.5px; }
+.sep::before, .sep::after { content: ""; flex: 1; height: 1px; background: rgba(255,255,255,.18); }
+.oauth-btn {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  width: 100%; padding: 14px; border-radius: 18px; cursor: pointer;
+  font-size: 15.5px; font-weight: 600; text-decoration: none; color: #fff;
+  background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.25);
+  transition: background .18s, transform .15s;
+}
+.oauth-btn:hover { background: rgba(255,255,255,.2); transform: translateY(-1px); }
+.oauth-btn svg { width: 20px; height: 20px; }
+.brand { position: fixed; bottom: 22px; left: 0; right: 0; text-align: center; font-size: 12.5px; color: rgba(255,255,255,.4); letter-spacing: .08em; }
+.shake { animation: shake .34s ease; }
+@keyframes shake { 0%,100%{transform:none} 20%{transform:translateX(-9px)} 40%{transform:translateX(8px)} 60%{transform:translateX(-5px)} 80%{transform:translateX(3px)} }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="orb o1"></div><div class="orb o2"></div><div class="orb o3"></div>
+
+<div class="card" id="card">
+  <div class="logo">
+    <svg viewBox="0 0 24 24" fill="none">
+      <path d="M12 2L21 8.5V15.5L12 22L3 15.5V8.5L12 2Z" stroke="#fff" stroke-width="1.8" stroke-linejoin="round" fill="rgba(255,255,255,.14)"/>
+      <path d="M12 2V22M3 8.5L12 15L21 8.5M3 15.5L12 9L21 15.5" stroke="#fff" stroke-width="1.2" opacity=".65"/>
+    </svg>
+  </div>
+
+  <h1 id="ttl">登录</h1>
+  <div class="sub" id="sub">请输入用户名和密码</div>
+
+  <form id="form" autocomplete="on">
+    <input type="text" id="u" placeholder="用户名" autocomplete="username" autocapitalize="off" spellcheck="false" autofocus>
+    <input type="password" id="p" placeholder="密码" autocomplete="current-password">
+    <button class="btn" type="submit" id="go">登录</button>
+    <div class="err" id="err"></div>
+  </form>
+
+  <div id="twofa" class="hidden">
+    <input type="text" id="code" placeholder="6 位验证码" inputmode="numeric" maxlength="6" autocomplete="one-time-code" style="text-align:center;letter-spacing:.4em;font-size:20px">
+    <button class="btn" type="button" id="go2">验证</button>
+    <div class="err" id="err2"></div>
+  </div>
+
+  <div id="oauthwrap" class="hidden">
+    <div class="sep"><span>或</span></div>
+    <div id="oauthbtns"></div>
+  </div>
+</div>
+
+<div class="brand">Powered by cloud-r2pan</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var $ = function (sel) { return document.querySelector(sel); };
+  var errEl = $('#err');
+  var err2El = $('#err2');
+  var username = '';        // 2FA 第二阶段要复用第一阶段输入的用户名与密码
+  var password = '';
+
+  function setErr(el, text) { el.textContent = text || ''; }
+
+  function shake() {
+    var c = $('#card');
+    c.classList.remove('shake');
+    void c.offsetWidth;
+    c.classList.add('shake');
+  }
+
+  function messagesFor(code) {
+    var map = {
+      oauth_account_not_allowed: '此 GitHub 账号不在允许名单内，无法登录。 / This GitHub account is not allowed.',
+      oauth_state_invalid: '登录状态已失效，请重新点击 GitHub 登录。 / Login state expired, please retry.',
+      oauth_exchange_failed: '与 GitHub 换取令牌失败，请重试。 / Token exchange failed.',
+      oauth_userinfo_failed: '读取 GitHub 账号信息失败，请重试。 / Failed to read GitHub profile.',
+      oauth_credentials_missing: 'GitHub OAuth 尚未配置完整（缺少 Client Secret）。 / OAuth client secret missing.',
+      oauth_provider_missing: 'OAuth 提供方已被删除或禁用。 / OAuth provider missing or disabled.',
+      oauth_secret_decrypt_failed: 'OAuth Client Secret 解密失败。 / Failed to decrypt client secret.',
+      oauth_provider_broken: 'OAuth 提供方配置不完整。 / OAuth provider misconfigured.'
+    };
+    return map[code] || ('登录失败：' + code);
+  }
+
+  // ── 第一步：已登录就直接进后台 ──────────────────────────
+  fetch('/api/admin/session', { headers: { 'accept': 'application/json' } })
+    .then(function (r) { if (r.ok) { location.replace('/admin'); } })
+    .catch(function () { /* 未登录时会 401，属正常 */ });
+
+  // ── 第二步：显示 OAuth 报错（回调会把错误带回本页）──────
+  var q = new URLSearchParams(location.search);
+  var oerr = q.get('oauth_error');
+  if (oerr) setErr(errEl, messagesFor(oerr));
+
+  // ── 第三步：拉取已启用的 OAuth 提供方，渲染按钮 ─────────
+  fetch('/oauth/providers', { headers: { 'accept': 'application/json' } })
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (!d || !d.providers || !d.providers.length) return;
+      var wrap = $('#oauthwrap');
+      var host = $('#oauthbtns');
+      // 服务端已经把按钮直出进来了（更稳，不依赖这次 fetch），前端就别重复渲染
+      if (host && host.children.length) return;
+      d.providers.forEach(function (p) {
+        var a = document.createElement('a');
+        a.className = 'oauth-btn';
+        // redirect 指回本页：这样"不在名单内"等错误能显示在登录页上
+        a.href = '/oauth/start?provider=' + encodeURIComponent(p.id) +
+                 '&redirect=' + encodeURIComponent('/login');
+        a.innerHTML = githubIcon(p.provider_type) + '<span>' +
+                      escapeHtml('使用 ' + (p.label || p.name || 'OAuth') + ' 登录') + '</span>';
+        host.appendChild(a);
+      });
+      wrap.classList.remove('hidden');
+    })
+    .catch(function () { /* 没配置 OAuth 就静默隐藏 */ });
+
+  function githubIcon(type) {
+    if (type !== 'github') return '';
+    return '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">' +
+           '<path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>';
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  // ── 第四步：提交用户名 + 密码 ───────────────────────────
+  function login(payload) {
+    return fetch('/api/admin/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(function (r) {
+      return r.json().then(function (d) { return { status: r.status, data: d }; });
+    });
+  }
+
+  $('#form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    setErr(errEl, '');
+    username = $('#u').value.trim();
+    password = $('#p').value.trim();
+    if (!username || !password) {
+      setErr(errEl, '请填写用户名和密码 / Username and password required');
+      shake();
+      return;
+    }
+    var btn = $('#go');
+    btn.disabled = true;
+    btn.textContent = '登录中…';
+    login({ username: username, key: password })
+      .then(function (res) {
+        if (res.data && res.data.need_2fa) {
+          $('#form').classList.add('hidden');
+          $('#twofa').classList.remove('hidden');
+          $('#code').focus();
+          return;
+        }
+        if (res.status === 200 && res.data && res.data.ok) {
+          location.replace('/admin');
+          return;
+        }
+        setErr(errEl, (res.data && res.data.error) || '登录失败');
+        shake();
+      })
+      .catch(function () { setErr(errEl, '网络错误，请重试'); shake(); })
+      .then(function () { btn.disabled = false; btn.textContent = '登录'; });
+  });
+
+  // ── 第五步：2FA 验证码 ──────────────────────────────────
+  function submit2fa() {
+    var code = $('#code').value.trim();
+    if (!/^\d{6}$/.test(code)) return;
+    setErr(err2El, '');
+    var btn = $('#go2');
+    btn.disabled = true;
+    login({ username: username, key: password, code: code })
+      .then(function (res) {
+        if (res.status === 200 && res.data && res.data.ok) {
+          location.replace('/admin');
+          return;
+        }
+        setErr(err2El, (res.data && res.data.error) || '验证失败');
+        shake();
+      })
+      .catch(function () { setErr(err2El, '网络错误，请重试'); })
+      .then(function () { btn.disabled = false; });
+  }
+  $('#go2').addEventListener('click', submit2fa);
+  $('#code').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); submit2fa(); }
+  });
+})();
+</script>
+</body>
+</html>

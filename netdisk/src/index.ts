@@ -2,7 +2,8 @@ import type { Env } from "./types";
 import { ensureSchema } from "./db";
 import { handleAdminApi } from "./admin";
 import { handleDownload, handleDirectDownload, handleShareInfo, handleVerify } from "./public";
-import { serveAdminPage, serveSharePage, serveMarketPage, errorPage } from "./pages";
+import { serveAdminPage, serveLoginPage, serveSharePage, serveMarketPage, errorPage } from "./pages";
+import { verifySession } from "./auth";
 import {
   handleOAuthStart,
   handleOAuthCallback,
@@ -11,6 +12,7 @@ import {
   handleOAuthProviders,
 } from "./oauth_handlers";
 import { findCodeByString, formatCodeStatus, checkCodeUsable, isCodeLenientFormat } from "./codes";
+import { FAVICON_ICO_B64, b64ToBytes } from "./favicon";
 
 /** 客户端真实 IP：从 CF 头或连接地址取 */
 function clientIp(req: Request): string {
@@ -77,11 +79,83 @@ export default {
       );
     }
   },
+
+  /**
+   * 定时任务 —— 清理回收站里超过 30 天的文件（真正删存储对象 + 数据库记录）。
+   * 触发时间见 wrangler.jsonc 的 triggers.crons。
+   *
+   * 注意：Worker 的 scheduled 与 fetch 共享同一份代码，但**没有请求上下文**，
+   * 所以这里不能依赖任何请求态（Cookie / Header），只做无身份的系统级清理。
+   */
+  async scheduled(
+    event: { cron: string; scheduledTime: number },
+    env: Env,
+    ctx: ExecutionContext
+  ): Promise<void> {
+    ctx.waitUntil(
+      (async () => {
+        try {
+          await ensureSchema(env);
+          // 顺带校准桶内真实占用（Cloudflare 是按这个收钱的：
+          //   孤儿对象、缩略图缓存都算进去，D1 求和会算漏）
+          // —— 这样上传前的硬上限校验（quota.ensureHeadroom）拿到的就是准数。
+          try {
+            const { measureBucket } = await import("./quota");
+            const m = await measureBucket(env);
+            console.log(`[cron ${event.cron}] 桶内实测 ${m.objects} 个对象 / ${m.bytes} 字节`);
+          } catch (err) {
+            console.error("[cron] 容量校准失败:", err);
+          }
+
+          const { collectExpired } = await import("./filestore");
+          const { ids, keys } = await collectExpired(env);
+          if (keys.length) {
+            const { createStorageProvider } = await import("./storage");
+            const { getSettings } = await import("./settings");
+            const st = await createStorageProvider(env, await getSettings(env));
+            await Promise.all(keys.map((k) => st.delete(k).catch(() => {})));
+          }
+          console.log(
+            `[cron ${event.cron}] 已彻底删除 ${ids.length} 个超过 ${30} 天的回收站文件`
+          );
+        } catch (err) {
+          console.error("[cron] 回收站清理失败:", err);
+        }
+      })()
+    );
+  },
 };
 
 async function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
+
+  // ══════════════ 全局门禁（默认拒绝） ══════════════
+  // 原则：除登录页 / 登录接口 / OAuth 流程之外，**一切**都要求有效的管理员会话。
+  //   - 页面请求未登录 → 只返回登录页（后台 HTML 一字节都不发）
+  //   - API 请求未登录 → 401 JSON
+  // 这样"未登录能做什么"由服务端决定，而不是靠前端藏按钮。
+  if (!isPublicPath(path) && !isGateExempt(env, path) && !(await verifySession(req, env))) {
+    if (path.startsWith("/api/")) {
+      return Response.json({ error: "unauthorized" }, { status: 401 });
+    }
+    return await serveLoginPage(env);
+  }
+
+  // 站点图标 —— 未登录也要能取到（登录页、错误页都在用它）
+  if (path === "/favicon.ico") {
+    return new Response(b64ToBytes(FAVICON_ICO_B64), {
+      headers: {
+        "content-type": "image/x-icon",
+        "cache-control": "public, max-age=604800, immutable",
+      },
+    });
+  }
+
+  // 登录页
+  if (path === "/login" || path === "/login/") {
+    return await serveLoginPage(env);
+  }
 
   // 首页：根据管理员设置决定去向（默认 → /admin；开启后 → /market）
   if (path === "/") {
@@ -285,6 +359,38 @@ async function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Res
   }
 
   return notFound(req);
+}
+
+/** 无需登录即可访问的端点：登录页、登录/登出接口、OAuth 流程本身、站点图标 */
+function isPublicPath(path: string): boolean {
+  return (
+    path === "/login" ||
+    path === "/login/" ||
+    path === "/api/admin/login" ||
+    path === "/api/admin/logout" ||
+    path.startsWith("/oauth/") ||
+    path === "/favicon.ico" ||
+    path === "/robots.txt"
+  );
+}
+
+/**
+ * 门禁例外：
+ *   - `/webdav` 自带 HTTP Basic Auth（用户名/密码在后台单独配置），
+ *     不能要求 Cookie 会话，否则 Finder / Windows 资源管理器挂载全部失效。
+ *   - 分享类端点（`/s/*`、`/d/*`、`/market`）**默认同样要求登录**。
+ *     需要把文件分享给站外的人时，把 Worker 变量 `allow_public_share` 设为 "true"
+ *     即可放行这几类端点（其余仍受保护）。
+ */
+function isGateExempt(env: Env, path: string): boolean {
+  if (path.startsWith("/webdav")) return true;
+  const isSharePath =
+    path === "/market" ||
+    path === "/market/" ||
+    path === "/api/market" ||
+    path.startsWith("/s/") ||
+    path.startsWith("/d/");
+  return isSharePath && env.allow_public_share === "true";
 }
 
 function notFound(req: Request): Response {
