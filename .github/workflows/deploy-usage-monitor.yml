@@ -100,7 +100,7 @@ jobs:
           DOMAIN_HTTP="$(curl -s -o /tmp/domains.json -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/workers/domains?hostname=usage.starsobservereric.cc.cd")"
           # CF 返回的 domain id 是带连字符的 36 位 UUID；success 值容忍冒号后带空格
-          DOMAIN_ID="$(grep -o '"id": *"[0-9a-f-]\{32,36\}"' /tmp/domains.json | head -n1 | sed 's/": */": /' | cut -d'"' -f4)"
+          DOMAIN_ID="$(grep -o '"id": *"[0-9a-f]\{32,64\}"' /tmp/domains.json | head -n1 | sed 's/": */": /' | cut -d'"' -f4)"
           DOMAIN_N="$(grep -c '"hostname"' /tmp/domains.json || true)"
           echo "cf api HTTP=$DOMAIN_HTTP bytes=$(wc -c < /tmp/domains.json) hostname条数=$DOMAIN_N success字段=$(grep -o '"success":[^,}]*' /tmp/domains.json | head -n1) errors=$(grep -o '"errors":\[[^]]*\]' /tmp/domains.json | head -n1)"
           echo "响应体（无敏感字段，仅调试）：$(cat /tmp/domains.json)"
