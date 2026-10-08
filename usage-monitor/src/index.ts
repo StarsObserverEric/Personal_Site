@@ -11,10 +11,16 @@
  * __access_token 的 exp 到 2027-09-05；SESSION 才是易失效的那张票，
  * 但每 2 分钟的定时请求本身就在"保持在线"。
  *
- * 端点（除 /healthz 外都要求 Authorization: Bearer <MONITOR_TOKEN>）：
+ * 端点（除 /healthz 外都要求 Authorization: Bearer <MONITOR_TOKEN>；无自定义域，
+ * 仅 workers.dev 运维兜底可达 —— 用户日常从网盘 /Admin_Private/ecnu_usage.csv 看数据）：
  *   GET /run         手动触发一次采集（部署后验证用）
  *   GET /export.csv  导出全部记录为 CSV
  *   GET /healthz     存活探针，无鉴权无数据
+ *
+ * 网盘回写：每次采集后对"数据指纹"（四个窗口 credits + 今日聚合，不含时间戳）
+ * 做 SHA-256，与上次不同（= 真的用了 AI）才把最新 CSV 推到网盘 ——
+ * 先上传新文件、成功后再 purge 旧文件，保证任意时刻网盘里都有一份完整 CSV。
+ * 空闲时（数据不变）完全不碰网盘。
  *
  * 存储表 ecnu_usage_log（复用 netdisk 的 cloud-r2pan D1 库）：
  * 成功行 status=ok 带四个限流窗口的 credits 与今日按模型聚合；
@@ -28,6 +34,11 @@ export interface Env {
   MONITOR_TOKEN: string;
   /** 7 天配额上限，看板显示 20000；可用环境变量覆盖 */
   QUOTA_CAP?: string;
+  /** ── 网盘回写（NETDISK_BASE/DISK_DIR 在 wrangler.jsonc vars，凭证走 secrets）── */
+  NETDISK_BASE?: string;
+  DISK_DIR?: string;
+  NETDISK_USER?: string;
+  NETDISK_PASS?: string;
 }
 
 /** 最小化的 D1 类型声明（避免为此项目引入 workers-types 依赖） */
@@ -240,6 +251,99 @@ function authed(req: Request, env: Env): boolean {
   return q === t;
 }
 
+/* ═════════════════ 网盘回写（CSV → /Admin_Private/ecnu_usage.csv） ═════════════════ */
+
+const STATE_TABLE = "ecnu_monitor_state";
+const CSV_NAME = "ecnu_usage.csv";
+
+/** 指纹只覆盖"业务数值"，绝不含 ts —— 否则每 2 分钟都会误判为变化、狂刷网盘 */
+function fingerprintOf(rows: Record<string, unknown>[]): string {
+  const last = rows[rows.length - 1] || {};
+  const basis = JSON.stringify([
+    last.week168_credits, last.five_hour_credits, last.day_credits, last.month_credits,
+    last.today_credits, last.today_requests, last.today_tokens, last.models_json,
+    last.status, rows.length,
+  ]);
+  return basis; // 直接当指纹用（无需真哈希：D1 里存这个串就行）
+}
+
+async function getState(db: D1Database, key: string): Promise<string | null> {
+  const q = await db.prepare(`SELECT v FROM ${STATE_TABLE} WHERE k = ?1`).bind(key).all();
+  const rows = (q.results ?? []) as Array<{ v?: string }>;
+  return rows[0]?.v ?? null;
+}
+
+async function setState(db: D1Database, key: string, v: string): Promise<void> {
+  await db
+    .prepare(`INSERT INTO ${STATE_TABLE} (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = ?2`)
+    .bind(key, v)
+    .run();
+}
+
+/** 登录 netdisk 拿会话 cookie（AGENT_MAINTENANCE 那套管理员凭证） */
+async function diskLogin(base: string, user: string, pass: string): Promise<string> {
+  const resp = await fetch(`${base}/api/admin/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "user-agent": UA },
+    body: JSON.stringify({ username: user, key: pass }),
+  });
+  if (!resp.ok) throw new Error(`netdisk login HTTP ${resp.status}`);
+  const cookie = resp.headers.get("set-cookie") || "";
+  const pairs = cookie
+    .split(/,(?=[^;]+?=)/)
+    .map((c) => c.split(";")[0].trim())
+    .filter(Boolean);
+  if (!pairs.length) throw new Error("netdisk login 未返回会话 cookie");
+  return pairs.join("; ");
+}
+
+/**
+ * 把 CSV 推到网盘：先传新文件，成功后再把同名旧文件 purge 掉（保证无空窗）。
+ * 同名旧文件可能不止一份（历史并发残留），全部清掉。
+ */
+async function publishToDisk(env: Env, csv: string): Promise<Record<string, unknown>> {
+  const base = (env.NETDISK_BASE || "").replace(/\/$/, "");
+  const dir = env.DISK_DIR || "/Admin_Private";
+  if (!base || !env.NETDISK_USER || !env.NETDISK_PASS) {
+    return { skipped: "netdisk credentials not configured" };
+  }
+  const cookie = await diskLogin(base, env.NETDISK_USER, env.NETDISK_PASS);
+  const common = { "user-agent": UA, cookie };
+
+  // 1) 列目录，找同名旧文件
+  const listResp = await fetch(`${base}/api/admin/dirs?path=${encodeURIComponent(dir)}`, { headers: common });
+  if (!listResp.ok) throw new Error(`netdisk listDir HTTP ${listResp.status}`);
+  const list = (await listResp.json()) as { files?: Array<{ id: string; name: string }> };
+  const olds = (list.files ?? []).filter((f) => f.name === CSV_NAME).map((f) => f.id);
+
+  // 2) 上传新文件
+  const upResp = await fetch(`${base}/api/admin/upload`, {
+    method: "POST",
+    headers: {
+      ...common,
+      "content-type": "text/csv; charset=utf-8",
+      "x-file-name": encodeURIComponent(CSV_NAME),
+      "x-file-path": encodeURIComponent(dir),
+    },
+    body: csv,
+  });
+  if (!upResp.ok) throw new Error(`netdisk upload HTTP ${upResp.status}: ${(await upResp.text()).slice(0, 120)}`);
+  const up = (await upResp.json()) as { id?: string };
+  const newId = up.id || "";
+
+  // 3) purge 同名旧文件（永久删，不进回收站；新传的那份不在 olds 里）
+  let purged = 0;
+  if (olds.length) {
+    const delResp = await fetch(`${base}/api/admin/files/purge`, {
+      method: "DELETE",
+      headers: { ...common, "content-type": "application/json" },
+      body: JSON.stringify({ ids: olds }),
+    });
+    if (delResp.ok) purged = olds.length;
+  }
+  return { uploaded: true, newId, purgedOld: purged };
+}
+
 function toCsv(rows: Record<string, unknown>[]): string {
   const cols = [
     "id", "ts", "status", "http_status",
@@ -265,7 +369,23 @@ export default {
   ): Promise<void> {
     ctx.waitUntil(
       runOnce(env)
-        .then((r) => console.log("[usage-monitor]", JSON.stringify(r)))
+        .then(async (r) => {
+          console.log("[usage-monitor]", JSON.stringify(r));
+          // ── 网盘回写：数据真的变了才推 CSV（空闲时零网盘操作）──
+          if (!r.ok) return;
+          await env.DB.prepare(
+            `CREATE TABLE IF NOT EXISTS ${STATE_TABLE} (k TEXT PRIMARY KEY, v TEXT)`
+          ).run();
+          const q = await env.DB.prepare(`SELECT * FROM ${TABLE} ORDER BY id ASC LIMIT 100000`).all();
+          const rows = (q.results ?? []) as Record<string, unknown>[];
+          const fp = fingerprintOf(rows);
+          if ((await getState(env.DB, "csv_fp")) === fp) return;
+          const result = await publishToDisk(env, toCsv(rows));
+          console.log("[usage-monitor] disk publish", JSON.stringify(result));
+          if ((result as { uploaded?: boolean }).uploaded) {
+            await setState(env.DB, "csv_fp", fp);
+          }
+        })
         .catch((e) => console.error("[usage-monitor] unexpected failure", e))
     );
   },
