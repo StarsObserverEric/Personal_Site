@@ -32,6 +32,7 @@ jobs:
           RAW_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
           ECNU_COOKIE_RAW: ${{ secrets.ECNU_USAGE_COOKIE }}
           MONITOR_TOKEN_RAW: ${{ secrets.USAGE_MONITOR_TOKEN }}
+          AGENT_MAINT_RAW: ${{ secrets.AGENT_MAINTENANCE }}
         run: |
           set -u
           TOKEN="$(printf '%s' "${RAW_TOKEN:-}" | tr -d '[:space:]')"
@@ -74,4 +75,28 @@ jobs:
             printf '%s' "$COOKIE" | npx --yes wrangler@4 secret put ECNU_COOKIE
             printf '%s' "$MT" | npx --yes wrangler@4 secret put MONITOR_TOKEN
             echo "::notice::监控凭证已写入（cookie ${#COOKIE} 字符 / token ${#MT} 字符）"
+          fi
+
+          # 网盘回写凭证：从现有 AGENT_MAINTENANCE（user:pass 格式）拆出，不新增要保管的秘密
+          DISK_USER="${AGENT_MAINT_RAW%%:*}"
+          DISK_PASS="${AGENT_MAINT_RAW#*:}"
+          if [ -n "$DISK_USER" ] && [ "$DISK_USER" != "$DISK_PASS" ]; then
+            printf '%s' "$DISK_USER" | npx --yes wrangler@4 secret put NETDISK_USER
+            printf '%s' "$DISK_PASS" | npx --yes wrangler@4 secret put NETDISK_PASS
+            echo "::notice::网盘回写凭证已写入（user ${#DISK_USER} 字符）"
+          else
+            echo "::warning::AGENT_MAINTENANCE 缺失或格式不是 user:pass，跳过网盘凭证写入"
+          fi
+
+          # ── 幂等清理：删掉历史遗留的自定义域 usage.starsobservereric.cc.cd（用户不要新域名）──
+          echo "──── 3/3 清理历史自定义域 ────"
+          DOMAIN_JSON="$(curl -s -H "Authorization: Bearer $TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/workers/domains?hostname=usage.starsobservereric.cc.cd")"
+          DOMAIN_ID="$(printf '%s' "$DOMAIN_JSON" | grep -o '"id":"[0-9a-f]\{32\}"' | head -n1 | cut -d'"' -f4)"
+          if [ -n "$DOMAIN_ID" ]; then
+            curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
+              "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/workers/domains/$DOMAIN_ID" > /dev/null
+            echo "::notice::自定义域 usage.starsobservereric.cc.cd 已删除"
+          else
+            echo "自定义域不存在（已清理过），跳过"
           fi
