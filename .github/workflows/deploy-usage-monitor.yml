@@ -64,6 +64,9 @@ jobs:
           # 顺序很重要：先 deploy 建出 Worker，再 secret put（否则找不到目标 Worker）。
           # 缺 Secret 时不阻塞部署：Worker 照常上线，cron 会落 status=error 的行，
           # 提醒你凭证还没配好。补上 Secret 后重跑本 workflow 即可自愈。
+          # 只清掉 CR/LF 和首尾空白（cookie 值本身含空格和分号，不能动）。
+          COOKIE="$(printf '%s' "${ECNU_COOKIE_RAW:-}" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          MT="$(printf '%s' "${MONITOR_TOKEN_RAW:-}" | tr -d '\r\n[:space:]')"
           echo "──── 2/2 写入监控凭证 ────"
           if [ -z "$COOKIE" ] || [ -z "$MT" ]; then
             echo "::warning::缺少 GitHub Secret ECNU_USAGE_COOKIE（格式：SESSION=...; __access_token=...）或 USAGE_MONITOR_TOKEN。Worker 已部署，但监控凭证未写入。请到仓库 Settings → Secrets and variables → Actions 添加这两个 Secret，然后重跑本 workflow。"
