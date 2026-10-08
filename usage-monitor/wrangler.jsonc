@@ -1,0 +1,32 @@
+{
+  "name": "ecnu-usage-monitor",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+
+  // 关掉默认的 ecnu-usage-monitor.<账号>.workers.dev 丑地址，改绑确定性自定义域
+  // （与 netdisk 同一套路：wrangler deploy 时自动创建 DNS 记录并绑定）。
+  "workers_dev": false,
+
+  // ═══════════════ 自定义域（wrangler deploy 时自动绑定） ═══════════════
+  "routes": [
+    { "pattern": "usage.starsobservereric.cc.cd", "custom_domain": true }
+  ],
+
+  // ═══════════════ 定时任务 ═══════════════
+  // 每 2 分钟拉一次 ECNU 用量接口（相当于替你点一次"刷新数据"按钮背后的请求）。
+  "triggers": {
+    "crons": ["*/2 * * * *"]
+  },
+
+  // ═══════════════ D1 存储 ═══════════════
+  // 复用 netdisk 的 cloud-r2pan 数据库（同一个库，独立的表 ecnu_usage_log，互不干扰）。
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "cloud-r2pan",
+      "database_id": "10a5da07-2dbd-4944-a72b-a651070b645d"
+    }
+  ],
+
+  "observability": { "enabled": true }
+}

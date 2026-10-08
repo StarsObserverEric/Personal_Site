@@ -1,0 +1,74 @@
+name: Deploy usage-monitor (Worker)
+
+# ECNU AI Console 用量监控：Cron 每 2 分钟拉用量接口 → 写 D1（ecnu_usage_log 表）。
+#
+# ── 安全铁律（与 deploy-netdisk.yml 相同，务必保留）──────────────────────
+# 凭证只允许以 shell 变量形式存在于**单个 run 步骤内部**。
+# 绝不要把"运行时派生出来的"令牌值写进 $GITHUB_ENV 或 step 的 env: ——
+# GitHub 只会给**已注册的 Secret 值**打码；派生值不在注册表里，无法被打码，
+# 会被原样明文打印进该仓库的 Actions 日志（公开仓库 = 令牌对全网泄露）。
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "usage-monitor/**"
+      - ".github/workflows/deploy-usage-monitor.yml"
+
+jobs:
+  deploy-usage-monitor:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: usage-monitor
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Deploy Worker and inject secrets
+        env:
+          RAW_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          RAW_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
+          ECNU_COOKIE_RAW: ${{ secrets.ECNU_USAGE_COOKIE }}
+          MONITOR_TOKEN_RAW: ${{ secrets.USAGE_MONITOR_TOKEN }}
+        run: |
+          set -u
+          TOKEN="$(printf '%s' "${RAW_TOKEN:-}" | tr -d '[:space:]')"
+          ACCOUNT="$(printf '%s' "${RAW_ACCOUNT:-}" | tr -d '[:space:]')"
+
+          if ! printf '%s' "$ACCOUNT" | grep -Eq '^[0-9a-f]{32}$'; then
+            echo "::error::CF_ACCOUNT_ID 非法（清理后 ${#ACCOUNT} 字符，应为 32 位小写十六进制）"
+            exit 1
+          fi
+
+          # 同 netdisk：容忍 textarea 粘贴污染，自动提取唯一候选（只打印长度，绝不打印值）
+          if ! printf '%s' "$TOKEN" | grep -Eq '^[A-Za-z0-9_-]{40,80}$'; then
+            CANDS="$(printf '%s' "$RAW_TOKEN" | tr -c 'A-Za-z0-9_-' '\n' | grep -E '^[A-Za-z0-9_-]{40,80}$' | grep -Ev '^[0-9a-f]{32}$' | sort -u)"
+            N="$(printf '%s' "$CANDS" | grep -c .)"
+            if [ "$N" = "1" ]; then
+              TOKEN="$(printf '%s' "$CANDS" | head -n1)"
+              echo "::warning::CF_API_TOKEN 不是纯令牌值，已自动提取唯一候选（${#TOKEN} 字符）。"
+            else
+              echo "::error::CF_API_TOKEN 无法解析（候选 ${N} 个）。"
+              exit 1
+            fi
+          fi
+
+          export CLOUDFLARE_API_TOKEN="$TOKEN"
+          export CLOUDFLARE_ACCOUNT_ID="$ACCOUNT"
+
+          echo "──── 1/2 部署 Worker ────"
+          npx --yes wrangler@4 deploy
+
+          # 顺序很重要：先 deploy 建出 Worker，再 secret put（否则找不到目标 Worker）。
+          # 缺 Secret 时不阻塞部署：Worker 照常上线，cron 会落 status=error 的行，
+          # 提醒你凭证还没配好。补上 Secret 后重跑本 workflow 即可自愈。
+          echo "──── 2/2 写入监控凭证 ────"
+          if [ -z "$COOKIE" ] || [ -z "$MT" ]; then
+            echo "::warning::缺少 GitHub Secret ECNU_USAGE_COOKIE（格式：SESSION=...; __access_token=...）或 USAGE_MONITOR_TOKEN。Worker 已部署，但监控凭证未写入。请到仓库 Settings → Secrets and variables → Actions 添加这两个 Secret，然后重跑本 workflow。"
+          else
+            printf '%s' "$COOKIE" | npx --yes wrangler@4 secret put ECNU_COOKIE
+            printf '%s' "$MT" | npx --yes wrangler@4 secret put MONITOR_TOKEN
+            echo "::notice::监控凭证已写入（cookie ${#COOKIE} 字符 / token ${#MT} 字符）"
+          fi
