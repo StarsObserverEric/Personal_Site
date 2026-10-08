@@ -97,15 +97,16 @@ jobs:
 
           # ── 幂等清理：删掉历史遗留的自定义域 usage.starsobservereric.cc.cd（用户不要新域名）──
           echo "──── 3/3 清理历史自定义域 ────"
-          DOMAIN_JSON="$(curl -s -H "Authorization: Bearer $TOKEN" \
+          DOMAIN_HTTP="$(curl -s -o /tmp/domains.json -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/workers/domains?hostname=usage.starsobservereric.cc.cd")"
-          # CF 返回的 domain id 是带连字符的 36 位 UUID
-          DOMAIN_ID="$(printf '%s' "$DOMAIN_JSON" | grep -o '"id":"[0-9a-f-]\{32,36\}"' | head -n1 | cut -d'"' -f4)"
-          DOMAIN_N="$(printf '%s' "$DOMAIN_JSON" | grep -c '"hostname"' || true)"
+          # CF 返回的 domain id 是带连字符的 36 位 UUID；success 值容忍冒号后带空格
+          DOMAIN_ID="$(grep -o '"id": *"[0-9a-f-]\{32,36\}"' /tmp/domains.json | head -n1 | sed 's/": */": /' | cut -d'"' -f4)"
+          DOMAIN_N="$(grep -c '"hostname"' /tmp/domains.json || true)"
+          echo "cf api HTTP=$DOMAIN_HTTP bytes=$(wc -c < /tmp/domains.json) hostname条数=$DOMAIN_N success字段=$(grep -o '"success":[^,}]*' /tmp/domains.json | head -n1) errors=$(grep -o '"errors":\[[^]]*\]' /tmp/domains.json | head -n1)"
           if [ -n "$DOMAIN_ID" ]; then
             curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
               "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/workers/domains/$DOMAIN_ID" > /dev/null
-            echo "::notice::自定义域 usage.starsobservereric.cc.cd 已删除（匹配到 $DOMAIN_N 条记录）"
+            echo "::notice::自定义域 usage.starsobservereric.cc.cd 已删除"
           else
-            echo "自定义域不存在（已清理过），跳过（api success 字段：$(printf '%s' "$DOMAIN_JSON" | grep -o '"success":[a-z]*' | head -n1)）"
+            echo "自定义域不存在（已清理过），跳过"
           fi
